@@ -1,0 +1,9 @@
+/target/
+/crates/worker/build/
+/node_modules/
+/.wrangler/
+*.profraw
+*.profdata
+fuzz/artifacts/
+fuzz/corpus/
+/fuzz/target/
