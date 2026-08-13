@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use thumbnail_core::{ByteSource, Error, Result};
+use rolodex_core::{ByteSource, Error, Result};
 use worker::{Bucket, Conditional, Range};
 
 pub struct R2Source {

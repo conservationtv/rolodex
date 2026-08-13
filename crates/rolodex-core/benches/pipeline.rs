@@ -1,7 +1,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use thumbnail_core::{
+use rolodex_core::{
     BUILD_CODEC, ProcessorOptions, SourceIdentity,
     codec::{SelectedDecoder, VideoDecoder, mp4_sample_to_annex_b},
     jpeg::encode_jpeg,
@@ -18,7 +18,7 @@ struct FixtureParts {
     moof_offset: u64,
     sample: Vec<u8>,
     nal_length_size: usize,
-    config: thumbnail_core::CodecConfig,
+    config: rolodex_core::CodecConfig,
 }
 
 fn fixture() -> FixtureParts {
@@ -78,7 +78,7 @@ fn fixture() -> FixtureParts {
     }
 }
 
-fn decoded_frame(parts: &FixtureParts) -> thumbnail_core::frame::DecodedFrame {
+fn decoded_frame(parts: &FixtureParts) -> rolodex_core::frame::DecodedFrame {
     let mut annex_b = Vec::new();
     mp4_sample_to_annex_b(&parts.sample, parts.nal_length_size, &mut annex_b).unwrap();
     let mut decoder = SelectedDecoder::default();

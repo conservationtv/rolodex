@@ -64,11 +64,11 @@ and the advisory audit are in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
 ## Local CLI
 
 ```bash
-cargo run --release -p media-thumb \
+cargo run --release -p rolodex \
   --no-default-features --features codec-h264 -- \
   input.mp4 output-directory
 
-cargo run --release -p media-thumb \
+cargo run --release -p rolodex \
   --no-default-features --features codec-h265 -- \
   input.mp4 output-directory
 ```
@@ -86,9 +86,9 @@ wall-clock metadata.
 ## Test and verify
 
 ```bash
-cargo test -p thumbnail-core -p media-thumb -p media-thumb-worker \
+cargo test -p rolodex-core -p rolodex -p rolodex-worker \
   --no-default-features --features codec-h264
-cargo test -p thumbnail-core -p media-thumb -p media-thumb-worker \
+cargo test -p rolodex-core -p rolodex -p rolodex-worker \
   --no-default-features --features codec-h265
 
 ./scripts/verify-fixtures.sh

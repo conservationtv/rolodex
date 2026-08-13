@@ -31,7 +31,7 @@ the smallest module without measuring decode cost.
 Upload an approved corpus:
 
 ```bash
-R2_BUCKET=media-recordings-staging \
+R2_BUCKET=rolodex-recordings-staging \
 FIXTURE_DIR=/absolute/path/to/approved-corpus \
 SOURCE_PREFIX=recordings/benchmark/ \
 ./scripts/benchmark-cloudflare.sh

@@ -31,7 +31,7 @@ mod tests {
             r#"{
                 "account":"3f4b7e3dcab231cbfdaa90a6a28bd548",
                 "action":"CopyObject",
-                "bucket":"media-recordings",
+                "bucket":"rolodex-recordings",
                 "object":{
                     "key":"recordings/camera-12/clip.mp4",
                     "size":65536,

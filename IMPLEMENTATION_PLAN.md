@@ -61,7 +61,7 @@ Deliberately unsupported:
 ├── IMPLEMENTATION_PLAN.md
 ├── PROGRESS.md
 ├── crates
-│   ├── thumbnail-core
+│   ├── rolodex-core
 │   │   ├── src
 │   │   │   ├── codec
 │   │   │   ├── mp4
@@ -82,7 +82,7 @@ Deliberately unsupported:
 └── scripts
 ```
 
-`thumbnail-core` has no Cloudflare dependencies. Its input boundary is a
+`rolodex-core` has no Cloudflare dependencies. Its input boundary is a
 bounded async byte-range source and its successful output is JPEG bytes plus
 metrics. The CLI and Worker are adapters around that boundary.
 
@@ -339,7 +339,7 @@ acceptable after cost modelling.
 
 ### M2 — local CLI
 
-- `media-thumb input.mp4 output.jpg` works for both feature variants.
+- `rolodex input.mp4 output.jpg` works for both feature variants.
 - Outputs validate against FFmpeg across the available corpus.
 
 ### M3 — ranged core

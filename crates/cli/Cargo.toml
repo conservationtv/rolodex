@@ -1,5 +1,5 @@
 [package]
-name = "media-thumb"
+name = "rolodex"
 description = "Local MediaMTX thumbnail, archive-index, and init processor"
 edition.workspace = true
 license.workspace = true
@@ -8,11 +8,11 @@ version.workspace = true
 
 [features]
 default = []
-codec-h264 = ["thumbnail-core/codec-h264"]
-codec-h265 = ["thumbnail-core/codec-h265"]
+codec-h264 = ["rolodex-core/codec-h264"]
+codec-h265 = ["rolodex-core/codec-h265"]
 
 [dependencies]
 async-trait.workspace = true
 futures = "0.3.31"
 serde_json.workspace = true
-thumbnail-core = { path = "../thumbnail-core", default-features = false }
+rolodex-core = { path = "../rolodex-core", default-features = false }

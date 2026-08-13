@@ -3,9 +3,9 @@ set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 account_id="${CLOUDFLARE_ACCOUNT_ID:-0def86f295b15a1a2d012774b38b04f9}"
-bucket="${R2_BUCKET:-mediamtx-thumbnail-staging}"
+bucket="${R2_BUCKET:-rolodex-staging}"
 minimum_ssim="${MINIMUM_SSIM:-0.90}"
-verify_dir="$(mktemp -d "${TMPDIR:-/tmp}/media-thumb-staging.XXXXXX")"
+verify_dir="$(mktemp -d "${TMPDIR:-/tmp}/rolodex-staging.XXXXXX")"
 
 cleanup() {
   rm -rf -- "$verify_dir"

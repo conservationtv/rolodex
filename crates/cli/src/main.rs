@@ -7,7 +7,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use thumbnail_core::{
+use rolodex_core::{
     ByteSource, Error, ProcessorOptions, Result, SourceIdentity, parse_duration_ns,
     process_recording,
 };
@@ -59,7 +59,7 @@ struct Args {
 }
 
 fn usage() -> &'static str {
-    "usage: media-thumb [--max-width N] [--max-height N] [--quality N] \
+    "usage: rolodex [--max-width N] [--max-height N] [--quality N] \
      [--thumbnail-interval DURATION] [--allow-missing-mtxi] INPUT.mp4 OUTPUT_DIRECTORY"
 }
 
@@ -159,7 +159,7 @@ fn run() -> std::result::Result<(), String> {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("media-thumb: {error}");
+        eprintln!("rolodex: {error}");
         std::process::exit(1);
     }
 }

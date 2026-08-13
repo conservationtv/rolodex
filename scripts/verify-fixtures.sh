@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/media-thumb-verify.XXXXXX")"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/rolodex-verify.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT
 minimum_ssim="${MINIMUM_SSIM:-0.85}"
 
@@ -10,14 +10,14 @@ verify_codec() {
   local codec="$1"
   local feature="codec-$codec"
   local fixture
-  cargo build --quiet --release -p media-thumb --no-default-features --features "$feature" \
+  cargo build --quiet --release -p rolodex --no-default-features --features "$feature" \
     --manifest-path "$repo_dir/Cargo.toml"
 
   while IFS= read -r -d '' fixture; do
     local base output_dir thumb dimensions log score
     base="$(basename "$fixture" .mp4)"
     output_dir="$work_dir/$codec-$base"
-    "$repo_dir/target/release/media-thumb" --allow-missing-mtxi \
+    "$repo_dir/target/release/rolodex" --allow-missing-mtxi \
       "$fixture" "$output_dir" >"$work_dir/$codec-$base.json"
     thumb="$output_dir/thumbnail.jpg"
     test -s "$output_dir/index.json"

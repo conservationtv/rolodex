@@ -11,7 +11,7 @@ esac
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export CODEC
-worker_name="${WORKER_NAME:-mediamtx-thumbnail-$CODEC}"
+worker_name="${WORKER_NAME:-rolodex-$CODEC}"
 cd "$repo_dir"
 args=(deploy)
 if [[ -n "${WRANGLER_ENV:-}" ]]; then

@@ -2,8 +2,8 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use rolodex_core::RecordingMetadata;
 use serde::{Deserialize, Serialize};
-use thumbnail_core::RecordingMetadata;
 
 pub(crate) const ARCHIVE_SCHEMA_VERSION: u32 = 1;
 
@@ -143,7 +143,7 @@ pub(crate) struct ArchiveRecording {
     pub(crate) id: String,
     pub(crate) started_at: String,
     pub(crate) ended_at: String,
-    #[serde(with = "thumbnail_core::decimal_string::scalar")]
+    #[serde(with = "rolodex_core::decimal_string::scalar")]
     pub(crate) duration_ns: u64,
     pub(crate) source: String,
     pub(crate) init: String,
@@ -240,7 +240,7 @@ impl ArchiveRecording {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ArchiveSegment {
-    #[serde(with = "thumbnail_core::decimal_string::scalar")]
+    #[serde(with = "rolodex_core::decimal_string::scalar")]
     pub(crate) presentation_start_ns: i64,
     pub(crate) byte_offset: u64,
     pub(crate) byte_length: u64,
@@ -252,13 +252,13 @@ pub(crate) struct ArchiveThumbnail {
     pub(crate) key: String,
     #[serde(
         default,
-        with = "thumbnail_core::decimal_string::optional",
+        with = "rolodex_core::decimal_string::optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) interval_ns: Option<u64>,
     pub(crate) cell: ThumbnailCell,
     pub(crate) columns: u32,
-    #[serde(with = "thumbnail_core::decimal_string::sequence")]
+    #[serde(with = "rolodex_core::decimal_string::sequence")]
     pub(crate) presentation_ns: Vec<i64>,
 }
 
@@ -331,7 +331,7 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
-    use thumbnail_core::processor::{
+    use rolodex_core::processor::{
         InitMetadata, MetadataSource, PartMetadata, RecordingDetails, ThumbnailFrameMetadata,
         ThumbnailMetadata,
     };

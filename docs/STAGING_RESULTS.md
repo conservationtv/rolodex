@@ -9,11 +9,11 @@ not local timing estimates.
 | Resource | Value |
 |---|---|
 | Account ID | `0def86f295b15a1a2d012774b38b04f9` |
-| R2 bucket | `mediamtx-thumbnail-staging` |
-| H.264 Queue | `mediamtx-thumbnail-h264-staging` |
-| H.264 DLQ | `mediamtx-thumbnail-h264-staging-dlq` |
-| H.265 Queue | `mediamtx-thumbnail-h265-staging` |
-| H.265 DLQ | `mediamtx-thumbnail-h265-staging-dlq` |
+| R2 bucket | `rolodex-staging` |
+| H.264 Queue | `rolodex-h264-staging` |
+| H.264 DLQ | `rolodex-h264-staging-dlq` |
+| H.265 Queue | `rolodex-h265-staging` |
+| H.265 DLQ | `rolodex-h265-staging-dlq` |
 | H.264 notification rule | `28b8052c-7359-4a42-8e41-7c0b5a202669` |
 | H.265 notification rule | `4aefde36-89d7-4bd7-80d5-96dc852b9416` |
 | Thumbnail-only H.264 baseline version | `ac6af22d-8b9e-480b-bc97-33e80d407b4e` |

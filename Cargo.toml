@@ -1,10 +1,10 @@
 [workspace]
 members = [
-    "crates/thumbnail-core",
+    "crates/rolodex-core",
     "crates/cli",
     "crates/worker",
 ]
-default-members = ["crates/thumbnail-core", "crates/cli"]
+default-members = ["crates/rolodex-core", "crates/cli"]
 resolver = "2"
 
 [workspace.package]

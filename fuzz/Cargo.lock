@@ -141,11 +141,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "media-thumb-fuzz"
+name = "rolodex-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
- "thumbnail-core",
+ "rolodex-core",
 ]
 
 [[package]]
@@ -279,7 +279,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "thumbnail-core"
+name = "rolodex-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use thumbnail_core::{ProcessorOptions, processor::PROCESSOR_VERSION};
+use rolodex_core::{ProcessorOptions, processor::PROCESSOR_VERSION};
 
 const SOURCE_ETAG: &str = "media-processor-source-etag";
 const SOURCE_VERSION: &str = "media-processor-source-version";

@@ -1,4 +1,4 @@
-use thumbnail_core::{
+use rolodex_core::{
     ByteSource, Error, ProcessorOptions, ProcessorOutput, Result, SourceIdentity, VideoCodec,
     process_recording,
 };
@@ -35,7 +35,7 @@ fn process<S: ByteSource + ?Sized>(source: &S) -> Result<ProcessorOutput> {
 
 #[test]
 fn creates_thumbnail_from_selected_codec_fixture() {
-    let source = thumbnail_core::source::MemorySource::new(selected_fixture());
+    let source = rolodex_core::source::MemorySource::new(selected_fixture());
     let output = process(&source).unwrap();
     assert_eq!(&output.thumbnail_jpeg.as_ref().unwrap()[..2], &[0xff, 0xd8]);
     assert_eq!(output.metrics.source_width, 320);
@@ -69,7 +69,7 @@ fn decodes_checked_in_profile_corpus() {
             "{}/../../fixtures/{codec_dir}/{fixture}",
             env!("CARGO_MANIFEST_DIR")
         );
-        let source = thumbnail_core::source::MemorySource::new(std::fs::read(path).unwrap());
+        let source = rolodex_core::source::MemorySource::new(std::fs::read(path).unwrap());
         let output = process(&source).unwrap();
         assert_eq!(
             &output.thumbnail_jpeg.as_ref().unwrap()[..2],
@@ -82,7 +82,7 @@ fn decodes_checked_in_profile_corpus() {
 
 #[test]
 fn rejects_opposite_codec_before_decoding() {
-    let source = thumbnail_core::source::MemorySource::new(other_fixture());
+    let source = rolodex_core::source::MemorySource::new(other_fixture());
     let error = process(&source).unwrap_err();
     match error {
         Error::CodecMismatch { expected, actual } => {
@@ -107,7 +107,7 @@ fn skips_a_large_top_level_box_without_fetching_its_payload() {
     padded.resize(first_box_size + free_size, 0);
     padded.extend_from_slice(&fixture[first_box_size..]);
 
-    let source = thumbnail_core::source::MemorySource::new(padded);
+    let source = rolodex_core::source::MemorySource::new(padded);
     let output = process(&source).unwrap();
 
     assert!(output.metrics.source_bytes > 2 * 1024 * 1024);
@@ -123,7 +123,7 @@ fn decodes_main10_and_reduces_to_eight_bit_jpeg() {
         "{}/../../fixtures/h265/synthetic-main10-320x180.mp4",
         env!("CARGO_MANIFEST_DIR")
     );
-    let source = thumbnail_core::source::MemorySource::new(std::fs::read(path).unwrap());
+    let source = rolodex_core::source::MemorySource::new(std::fs::read(path).unwrap());
     let output = process(&source).unwrap();
     assert_eq!(output.metrics.source_bit_depth, 10);
     assert_eq!(&output.thumbnail_jpeg.as_ref().unwrap()[..2], &[0xff, 0xd8]);

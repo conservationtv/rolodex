@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
-use serde::{Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
-use thumbnail_core::{
+use rolodex_core::{
     Error as CoreError, ProcessorOptions, SourceIdentity, parse_duration_ns, process_recording,
 };
+use serde::{Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 use worker::{
     Bucket, Conditional, Context, Env, HttpMetadata, MessageBatch, MessageExt,
     Result as WorkerResult, console_log,
@@ -153,7 +153,7 @@ enum JobResult {
         init_created: bool,
         thumbnail_created: bool,
         replaced_index: bool,
-        metrics: thumbnail_core::ProcessorMetrics,
+        metrics: rolodex_core::ProcessorMetrics,
     },
 }
 
@@ -286,7 +286,7 @@ async fn process(
                     .map_err(|error| JobFailure::Retry(format!("R2 init HEAD failed: {error}")))?
                     .is_some();
                 if thumbnail_exists && init_exists {
-                    let metadata: thumbnail_core::RecordingMetadata =
+                    let metadata: rolodex_core::RecordingMetadata =
                         load_json(&bucket, &keys.index, MAX_DAILY_ARCHIVE_BYTES)
                             .await?
                             .ok_or_else(|| {
@@ -490,7 +490,7 @@ async fn put_json_if_current<T: Serialize>(
 async fn update_archive_manifests(
     bucket: &Bucket,
     config: &Config,
-    metadata: &thumbnail_core::RecordingMetadata,
+    metadata: &rolodex_core::RecordingMetadata,
     init_key: String,
     thumbnail_key: Option<String>,
 ) -> std::result::Result<ArchiveKeys, JobFailure> {
@@ -659,7 +659,7 @@ fn log_outcome(message_id: &str, event: &R2Event, level: &str, outcome: &str, ex
         "event_time": event.event_time,
         "event_size": event.object.size,
         "etag": event.object.e_tag,
-        "build_codec": thumbnail_core::BUILD_CODEC,
+        "build_codec": rolodex_core::BUILD_CODEC,
     });
     let fields = value
         .as_object_mut()

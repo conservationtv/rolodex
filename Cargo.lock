@@ -550,23 +550,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
-name = "media-thumb"
+name = "rolodex"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
  "serde_json",
- "thumbnail-core",
+ "rolodex-core",
 ]
 
 [[package]]
-name = "media-thumb-worker"
+name = "rolodex-worker"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "serde",
  "serde_json",
- "thumbnail-core",
+ "rolodex-core",
  "worker",
 ]
 
@@ -958,7 +958,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "thumbnail-core"
+name = "rolodex-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",

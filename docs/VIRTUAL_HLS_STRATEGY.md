@@ -96,7 +96,7 @@ recordings in that start-date shard, which may extend into the following UTC day
 
 The current Rust workspace already has the important pieces:
 
-- `thumbnail-core` has a checked BMFF box walker, bounded async byte ranges,
+- `rolodex-core` has a checked BMFF box walker, bounded async byte ranges,
   MediaMTX `moov`/`moof` handling, codec configuration parsing, random-access
   sample validation, and the image pipeline.
 - The Worker already consumes completed R2 object events, performs
@@ -336,7 +336,7 @@ Before production rollout:
 ## Delivery sequence
 
 1. Add movie/track/`mtxi` and timing-aware fragment models to
-   `thumbnail-core`.
+   `rolodex-core`.
 2. Add canonical init construction and content hashing.
 3. Replace the thumbnail-only pipeline with the unified processor and schema-v4
    metadata output.

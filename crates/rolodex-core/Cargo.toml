@@ -1,5 +1,5 @@
 [package]
-name = "thumbnail-core"
+name = "rolodex-core"
 description = "Bounded ranged fMP4 thumbnail extraction core"
 edition.workspace = true
 license.workspace = true

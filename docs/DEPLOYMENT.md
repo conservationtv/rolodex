@@ -16,9 +16,9 @@ Account ID: 0def86f295b15a1a2d012774b38b04f9
 The root names remain templates for a future custom/production environment:
 
 ```text
-R2 bucket: media-recordings
-Queue: media-thumbnail-jobs
-DLQ: media-thumbnail-dead-letter
+R2 bucket: rolodex-recordings
+Queue: rolodex-jobs
+DLQ: rolodex-dead-letter
 R2 binding: MEDIA_BUCKET
 ```
 
@@ -31,10 +31,10 @@ Two isolated staging environments are live in the pinned account:
 
 | Environment | Worker/Queue | Source prefix |
 |---|---|---|
-| `staging_h264` | `mediamtx-thumbnail-h264-staging` | `recordings/h264/` |
-| `staging_h265` | `mediamtx-thumbnail-h265-staging` | `recordings/h265/` |
+| `staging_h264` | `rolodex-h264-staging` | `recordings/h264/` |
+| `staging_h265` | `rolodex-h265-staging` | `recordings/h265/` |
 
-They share only the dedicated `mediamtx-thumbnail-staging` R2 bucket. Each has
+They share only the dedicated `rolodex-staging` R2 bucket. Each has
 its own DLQ. Public `workers.dev` and preview URLs are disabled.
 
 ## Build and deploy one codec
@@ -51,7 +51,7 @@ CODEC=h265 ./scripts/deploy.sh
 ```
 
 `CODEC` is required. It selects exactly one Cargo feature and also defaults the
-Worker name to `mediamtx-thumbnail-h264` or `mediamtx-thumbnail-h265`. Set
+Worker name to `rolodex-h264` or `rolodex-h265`. Set
 `WORKER_NAME` to override the name.
 
 The build uses `worker-build --no-panic-recovery`: the release profile is
@@ -75,8 +75,8 @@ from 868 ms to 473 ms. See `docs/STAGING_RESULTS.md`.
 For a new target bucket and Queue only, create the notification with:
 
 ```bash
-R2_BUCKET=media-recordings \
-QUEUE_NAME=media-thumbnail-jobs \
+R2_BUCKET=rolodex-recordings \
+QUEUE_NAME=rolodex-jobs \
 SOURCE_PREFIX=recordings/ \
 ./scripts/configure-event-notification.sh
 ```

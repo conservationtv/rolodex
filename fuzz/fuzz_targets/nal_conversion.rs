@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use thumbnail_core::codec::{VideoCodec, mp4_sample_to_annex_b, sample_has_random_access_nal};
+use rolodex_core::codec::{VideoCodec, mp4_sample_to_annex_b, sample_has_random_access_nal};
 
 fuzz_target!(|input: (&[u8], u8)| {
     let (data, encoded_length_size) = input;

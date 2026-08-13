@@ -12,7 +12,7 @@ if [[ "$("$mediamtx_bin" --version)" != "v1.18.2" ]]; then
   exit 2
 fi
 
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/media-thumb-mediamtx.XXXXXX")"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/rolodex-mediamtx.XXXXXX")"
 server_pid=""
 cleanup() {
   if [[ -n "$server_pid" ]]; then
