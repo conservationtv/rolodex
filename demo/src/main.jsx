@@ -41,6 +41,16 @@ function formatTime(iso) {
   return iso ? new Date(iso).toLocaleString() : "—";
 }
 
+function formatDuration(startedAt, endedAt) {
+  const totalSeconds = Math.max(0, Math.round((Date.parse(endedAt) - Date.parse(startedAt)) / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return [hours ? `${hours}h` : "", minutes ? `${minutes}m` : "", `${seconds}s`]
+    .filter(Boolean)
+    .join(" ");
+}
+
 function useHoverThrottle(store) {
   const lastRun = useRef(-Infinity);
   const pending = useRef();
@@ -393,7 +403,26 @@ function Player({ latest, manifests, connectionId }) {
         {error ? message(error) : `${snapshot.phase} · ${recordings} recordings · ${gaps} gaps`}
       </p>
 
-      <video ref={video} muted={muted} playsInline />
+      <div className="video-stage">
+        <video ref={video} muted={muted} playsInline />
+        {snapshot.phase === "gap" && (
+          <div className="gap-overlay" role="status">
+            <strong>No recording available</strong>
+            <span>{formatTime(snapshot.location.span.startedAt)}</span>
+            <span>to {formatTime(snapshot.location.span.endedAt)}</span>
+            <span className="gap-current">Current: {formatTime(snapshot.playhead)}</span>
+            <small>
+              Missing interval: {formatDuration(
+                snapshot.location.span.startedAt,
+                snapshot.location.span.endedAt,
+              )}
+            </small>
+            <button type="button" onClick={() => seek.mutate(snapshot.location.span.endedAt)}>
+              Go to next recording
+            </button>
+          </div>
+        )}
+      </div>
       <div className="controls">
         <button type="button" onClick={() => playback.mutate()} disabled={playback.isPending}>
           {snapshot.playback.playing ? "Pause" : "Play"}
@@ -424,12 +453,6 @@ function Player({ latest, manifests, connectionId }) {
         onZoom={zoomAt}
         onRecenter={recenterAt}
       />
-
-      {snapshot.phase === "gap" && (
-        <button type="button" onClick={() => seek.mutate(snapshot.location.span.endedAt)}>
-          Skip gap
-        </button>
-      )}
 
       <div className="thumbnail-window" aria-live="polite">
         <p>
