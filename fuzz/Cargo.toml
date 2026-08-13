@@ -1,0 +1,42 @@
+[package]
+name = "media-thumb-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+thumbnail-core = { path = "../crates/thumbnail-core", default-features = false, features = ["codec-h264"] }
+
+[workspace]
+
+[[bin]]
+name = "box_parser"
+path = "fuzz_targets/box_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "codec_config"
+path = "fuzz_targets/codec_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fragment"
+path = "fuzz_targets/fragment.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nal_conversion"
+path = "fuzz_targets/nal_conversion.rs"
+test = false
+doc = false
+bench = false

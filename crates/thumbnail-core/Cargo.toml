@@ -1,0 +1,30 @@
+[package]
+name = "thumbnail-core"
+description = "Bounded ranged fMP4 thumbnail extraction core"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+default = []
+codec-h264 = ["dep:rusty_h264-decoder"]
+codec-h265 = ["dep:rust_h265"]
+
+[dependencies]
+async-trait.workspace = true
+jpeg-encoder.workspace = true
+rust_h265 = { workspace = true, optional = true }
+rusty_h264-decoder = { workspace = true, optional = true }
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion = "0.7.0"
+futures = "0.3.31"
+serde_json.workspace = true
+
+[[bench]]
+name = "pipeline"
+harness = false

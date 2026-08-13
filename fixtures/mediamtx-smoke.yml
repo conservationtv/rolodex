@@ -1,0 +1,17 @@
+logLevel: warn
+rtspAddress: :18554
+rtmp: false
+hls: false
+webrtc: false
+srt: false
+playback: false
+
+pathDefaults:
+  record: true
+  recordPath: ./recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+  recordFormat: fmp4
+  recordPartDuration: 100ms
+  recordSegmentDuration: 1s
+
+paths:
+  all_others:
