@@ -1,0 +1,20 @@
+{
+  "name": "archive-scrubber-demo",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --force --open /archive-scrubber.html"
+  },
+  "dependencies": {
+    "@conservationtv/filofax": "workspace:*",
+    "@tanstack/react-query": "^5.85.5",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.2",
+    "vite": "^7.1.3"
+  }
+}

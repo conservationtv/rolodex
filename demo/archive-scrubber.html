@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Filofax demo</title>
+    <style>
+      :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #111; color: #eee; }
+      main { width: min(900px, calc(100% - 32px)); margin: 32px auto; }
+      h1 { margin: 0 0 24px; }
+      h2 { margin: 0; font-size: 1.15rem; }
+      p { margin: 6px 0 16px; color: #aaa; }
+      section + section { margin-top: 28px; }
+      video { width: 100%; aspect-ratio: 16 / 9; background: #000; }
+      input { width: 100%; }
+      input {
+        margin-top: 6px;
+        border: 1px solid #454545;
+        border-radius: 6px;
+        padding: 9px 10px;
+        background: #181818;
+        color: inherit;
+      }
+      input:focus-visible { outline: 2px solid #7cb7ff; outline-offset: 1px; }
+      label { color: #ccc; font-size: 0.85rem; }
+      button {
+        border: 1px solid #555;
+        border-radius: 6px;
+        padding: 8px 13px;
+        background: #292929;
+        color: inherit;
+        cursor: pointer;
+      }
+      button:hover { background: #343434; }
+      button:disabled { cursor: default; opacity: 0.55; }
+      button.primary { margin-top: 16px; border-color: #287acc; background: #1262ad; }
+      button.primary:hover { background: #1971c2; }
+      .configuration { padding: 20px; border: 1px solid #333; border-radius: 10px; background: #171717; }
+      .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }
+      .config-grid .wide { grid-column: 1 / -1; }
+      .row { display: flex; justify-content: space-between; gap: 16px; }
+      .controls { display: flex; gap: 8px; margin: 12px 0; }
+      .timeline { margin-top: 20px; }
+      .timeline-heading,
+      .timeline-readout,
+      .timeline-boundaries,
+      .minimap-heading {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .timeline-heading { align-items: baseline; }
+      .timeline-heading span,
+      .minimap-heading,
+      .timeline-boundaries { color: #888; font-size: 0.75rem; }
+      .timeline-readout { margin: 8px 0 6px; color: #bbb; font-size: 0.85rem; }
+      .timeline-track {
+        position: relative;
+        height: 54px;
+        overflow: hidden;
+        border: 1px solid #4a4a4a;
+        border-radius: 6px;
+        background: repeating-linear-gradient(90deg, #1b1b1b 0, #1b1b1b 9.9%, #242424 10%);
+        cursor: crosshair;
+        touch-action: pan-y;
+      }
+      .timeline-track:focus-visible,
+      .timeline-minimap:focus-visible { outline: 2px solid #7cb7ff; outline-offset: 2px; }
+      .timeline-track[aria-disabled="true"],
+      .timeline-minimap[aria-disabled="true"] { cursor: default; opacity: 0.55; }
+      .timeline-segment,
+      .timeline-marker,
+      .minimap-recording,
+      .minimap-viewport,
+      .minimap-playhead { position: absolute; top: 0; bottom: 0; }
+      .timeline-segment.recording { background: #216bb1; }
+      .timeline-segment.gap { background: #292929; }
+      .timeline-segment + .timeline-segment { border-left: 1px solid #111; }
+      .timeline-marker { z-index: 2; width: 1px; pointer-events: none; }
+      .timeline-marker.hover { background: #8bc0f5; }
+      .timeline-marker.playhead { width: 3px; margin-left: -1px; background: #fff; box-shadow: 0 0 0 1px #1118; }
+      .timeline-boundaries { margin-top: 5px; }
+      .minimap-heading { margin: 16px 0 6px; }
+      .timeline-minimap {
+        position: relative;
+        height: 24px;
+        overflow: hidden;
+        border: 1px solid #414141;
+        border-radius: 4px;
+        background: #1d1d1d;
+        cursor: pointer;
+      }
+      .minimap-recording { background: #285d8d; }
+      .minimap-viewport {
+        z-index: 2;
+        min-width: 3px;
+        border: 2px solid #9ecfff;
+        background: #64a9e733;
+        pointer-events: none;
+      }
+      .minimap-playhead { z-index: 3; width: 2px; background: #fff; pointer-events: none; }
+      .minimap-boundaries { color: #707070; }
+      .thumbnail-window { margin-top: 16px; }
+      .thumbnail-window p { margin-bottom: 8px; }
+      .thumbnail-stage {
+        display: grid;
+        width: 240px;
+        max-width: 100%;
+        aspect-ratio: 16 / 9;
+        place-items: center;
+        overflow: hidden;
+        border: 1px solid #555;
+        background: #090909;
+        color: #777;
+        font-size: 0.8rem;
+      }
+      .error { color: #ff8f8f; }
+      canvas { width: 100%; max-width: 100%; }
+      @media (max-width: 640px) {
+        .config-grid { grid-template-columns: 1fr; }
+        .config-grid .wide { grid-column: auto; }
+        .row { align-items: flex-start; flex-direction: column; gap: 4px; }
+        .timeline-heading,
+        .timeline-readout { align-items: flex-start; flex-direction: column; gap: 3px; }
+        .timeline-boundaries { font-size: 0.65rem; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

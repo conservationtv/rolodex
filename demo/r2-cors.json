@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": [
+          "https://pub-d9f64c713be044738c66c6bc2f223625.r2.dev"
+        ],
+        "methods": [
+          "GET"
+        ],
+        "headers": [
+          "Authorization",
+          "X-Amz-Content-Sha256",
+          "X-Amz-Date"
+        ]
+      },
+      "exposeHeaders": [
+        "ETag",
+        "Content-Length"
+      ],
+      "maxAgeSeconds": 3600
+    }
+  ]
+}
