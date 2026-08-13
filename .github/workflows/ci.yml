@@ -1,0 +1,83 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        codec: [h264, h265]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - run: cargo fmt --all --check
+      - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
+      - run: bash -n scripts/*.sh
+      - run: cargo test -p thumbnail-core -p media-thumb -p media-thumb-worker --no-default-features --features codec-${{ matrix.codec }}
+      - run: cargo clippy -p thumbnail-core -p media-thumb --no-default-features --features codec-${{ matrix.codec }} --all-targets -- -D warnings
+      - run: cargo check -p media-thumb-worker --target wasm32-unknown-unknown --no-default-features --features codec-${{ matrix.codec }}
+      - if: matrix.codec == 'h264'
+        run: cargo check --manifest-path fuzz/Cargo.toml --bins
+
+  feature-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Require exactly one codec feature
+        run: |
+          if cargo check -p thumbnail-core --no-default-features; then
+            exit 1
+          fi
+          if cargo check -p thumbnail-core --no-default-features --features codec-h264,codec-h265; then
+            exit 1
+          fi
+
+  fixture-oracle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: ./scripts/verify-fixtures.sh
+
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+      - run: cargo audit --file fuzz/Cargo.lock
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.22.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm audit
+
+  worker-package:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        codec: [h264, h265]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: worker-build@0.8.5
+      - run: CODEC=${{ matrix.codec }} ./scripts/build-worker.sh
+      - run: test -s crates/worker/build/worker/index.wasm

@@ -1,6 +1,10 @@
 /target/
 /crates/worker/build/
 /node_modules/
+/packages/*/node_modules/
+/packages/*/dist/
+/demo/node_modules/
+/demo/dist/
 /.wrangler/
 *.profraw
 *.profdata

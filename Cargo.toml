@@ -1,0 +1,39 @@
+[workspace]
+members = [
+    "crates/thumbnail-core",
+    "crates/cli",
+    "crates/worker",
+]
+default-members = ["crates/thumbnail-core", "crates/cli"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.87"
+version = "0.1.0"
+
+[workspace.dependencies]
+async-trait = "0.1.92"
+jpeg-encoder = { version = "0.7.1", default-features = false, features = ["std"] }
+rust_h265 = "0.1.0"
+rusty_h264-decoder = "0.8.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+thiserror = "2.0.17"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+panic = "abort"
+strip = "symbols"
+
+[profile.release-small]
+inherits = "release"
+opt-level = "s"
+
+[profile.release-tiny]
+inherits = "release"
+opt-level = "z"

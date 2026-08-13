@@ -1,0 +1,20 @@
+{
+  "name": "mediamtx-thumbnail-worker",
+  "private": true,
+  "packageManager": "pnpm@10.22.0",
+  "scripts": {
+    "build:client": "pnpm --filter @conservationtv/filofax build",
+    "build:demo": "pnpm --filter archive-scrubber-demo build",
+    "dev:demo": "pnpm --filter archive-scrubber-demo dev",
+    "lint:client": "pnpm --filter @conservationtv/filofax lint",
+    "test:client": "pnpm --filter @conservationtv/filofax test",
+    "typecheck:client": "pnpm --filter @conservationtv/filofax typecheck"
+  },
+  "devDependencies": {
+    "wrangler": "4.120.0"
+  },
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=10.22.0"
+  }
+}
