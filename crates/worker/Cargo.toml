@@ -1,0 +1,24 @@
+[package]
+name = "media-thumb-worker"
+description = "Cloudflare Queue/R2 adapter for unified MediaMTX artifact processing"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+codec-h264 = ["thumbnail-core/codec-h264"]
+codec-h265 = ["thumbnail-core/codec-h265"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thumbnail-core = { path = "../thumbnail-core", default-features = false }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+async-trait.workspace = true
+worker = { version = "0.8.5", features = ["queue"] }

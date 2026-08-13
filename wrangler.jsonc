@@ -1,0 +1,147 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "account_id": "0def86f295b15a1a2d012774b38b04f9",
+  "name": "mediamtx-thumbnail",
+  "workers_dev": false,
+  "preview_urls": false,
+  "main": "crates/worker/build/worker/shim.mjs",
+  "compatibility_date": "2026-08-01",
+  "limits": {
+    "subrequests": 10000
+  },
+  "build": {
+    "command": "./scripts/build-worker.sh",
+    "watch_dir": ["crates/thumbnail-core/src", "crates/worker/src"]
+  },
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_BUCKET",
+      "bucket_name": "media-recordings"
+    }
+  ],
+  "queues": {
+    "consumers": [
+      {
+        "queue": "media-thumbnail-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        "dead_letter_queue": "media-thumbnail-dead-letter",
+        "max_concurrency": 1,
+        "retry_delay": 30
+      }
+    ]
+  },
+  "vars": {
+    "SOURCE_PREFIX": "recordings/",
+    "ARTIFACT_PREFIX": "artifacts/",
+    "INIT_PREFIX": "init/",
+    "MAX_WIDTH": "480",
+    "MAX_HEIGHT": "270",
+    "JPEG_QUALITY": "78",
+    "THUMBNAIL_INTERVAL": "10s",
+    "MAX_THUMBNAIL_FRAMES": "1000",
+    "MAX_SPRITE_PIXELS": "20000000",
+    "REQUIRE_MEDIAMTX": "true",
+    "INITIAL_READ_BYTES": "262144",
+    "FRAGMENT_READ_AHEAD_BYTES": "1048576",
+    "MAX_R2_BYTES_PER_JOB": "134217728",
+    "MAX_SAMPLES_DECODED": "100000",
+    "MAX_SAMPLES_EXAMINED": "100000",
+    "MAX_SAMPLES_INDEXED": "1000000",
+    "MAX_PARTS_PER_RECORDING": "5000",
+    "MAX_TOP_LEVEL_BOXES": "20000"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1.0
+  },
+  "env": {
+    "staging_h264": {
+      "name": "mediamtx-thumbnail-h264-staging",
+      "r2_buckets": [
+        {
+          "binding": "MEDIA_BUCKET",
+          "bucket_name": "mediamtx-thumbnail-staging"
+        }
+      ],
+      "queues": {
+        "consumers": [
+          {
+            "queue": "mediamtx-thumbnail-h264-staging",
+            "max_batch_size": 1,
+            "max_batch_timeout": 5,
+            "max_retries": 5,
+            "dead_letter_queue": "mediamtx-thumbnail-h264-staging-dlq",
+            "max_concurrency": 1,
+            "retry_delay": 30
+          }
+        ]
+      },
+      "vars": {
+        "SOURCE_BUCKET": "mediamtx-thumbnail-staging",
+        "SOURCE_PREFIX": "recordings/h264/",
+        "ARTIFACT_PREFIX": "artifacts/h264/",
+        "INIT_PREFIX": "init/",
+        "MAX_WIDTH": "480",
+        "MAX_HEIGHT": "270",
+        "JPEG_QUALITY": "78",
+        "THUMBNAIL_INTERVAL": "10s",
+        "MAX_THUMBNAIL_FRAMES": "1000",
+        "MAX_SPRITE_PIXELS": "20000000",
+        "REQUIRE_MEDIAMTX": "true",
+        "INITIAL_READ_BYTES": "262144",
+        "FRAGMENT_READ_AHEAD_BYTES": "1048576",
+        "MAX_R2_BYTES_PER_JOB": "134217728",
+        "MAX_SAMPLES_DECODED": "100000",
+        "MAX_SAMPLES_EXAMINED": "100000",
+        "MAX_SAMPLES_INDEXED": "1000000",
+        "MAX_PARTS_PER_RECORDING": "5000",
+        "MAX_TOP_LEVEL_BOXES": "20000"
+      }
+    },
+    "staging_h265": {
+      "name": "mediamtx-thumbnail-h265-staging",
+      "r2_buckets": [
+        {
+          "binding": "MEDIA_BUCKET",
+          "bucket_name": "mediamtx-thumbnail-staging"
+        }
+      ],
+      "queues": {
+        "consumers": [
+          {
+            "queue": "mediamtx-thumbnail-h265-staging",
+            "max_batch_size": 1,
+            "max_batch_timeout": 5,
+            "max_retries": 5,
+            "dead_letter_queue": "mediamtx-thumbnail-h265-staging-dlq",
+            "max_concurrency": 1,
+            "retry_delay": 30
+          }
+        ]
+      },
+      "vars": {
+        "SOURCE_BUCKET": "mediamtx-thumbnail-staging",
+        "SOURCE_PREFIX": "recordings/h265/",
+        "ARTIFACT_PREFIX": "artifacts/h265/",
+        "INIT_PREFIX": "init/",
+        "MAX_WIDTH": "480",
+        "MAX_HEIGHT": "270",
+        "JPEG_QUALITY": "78",
+        "THUMBNAIL_INTERVAL": "10s",
+        "MAX_THUMBNAIL_FRAMES": "1000",
+        "MAX_SPRITE_PIXELS": "20000000",
+        "REQUIRE_MEDIAMTX": "true",
+        "INITIAL_READ_BYTES": "262144",
+        "FRAGMENT_READ_AHEAD_BYTES": "1048576",
+        "MAX_R2_BYTES_PER_JOB": "134217728",
+        "MAX_SAMPLES_DECODED": "100000",
+        "MAX_SAMPLES_EXAMINED": "100000",
+        "MAX_SAMPLES_INDEXED": "1000000",
+        "MAX_PARTS_PER_RECORDING": "5000",
+        "MAX_TOP_LEVEL_BOXES": "20000"
+      }
+    }
+  }
+}
