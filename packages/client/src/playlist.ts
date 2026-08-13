@@ -106,8 +106,30 @@ export class PlaylistFactory {
     });
     const targetNs = nsFromSeconds(Math.max(0.001, this.targetSegmentSeconds));
 
+    /* A playlist may cross file boundaries only while UTC remains continuous.
+     * A real gap must terminate media so the player store can expose it rather
+     * than collapsing missing wall-clock time. */
+    const targetSpanIndex = timeline.spans.findIndex((span) =>
+      span.kind === "recording"
+      && atNs >= utcNs(span.startedAt)
+      && atNs < utcNs(span.endedAt),
+    );
+    if (targetSpanIndex < 0) throw new Error(`No media is available around ${request.at}`);
+    let firstSpanIndex = targetSpanIndex;
+    while (firstSpanIndex > 0 && timeline.spans[firstSpanIndex - 1]?.kind === "recording") {
+      firstSpanIndex -= 1;
+    }
+    let lastSpanIndex = targetSpanIndex;
+    while (
+      lastSpanIndex + 1 < timeline.spans.length
+      && timeline.spans[lastSpanIndex + 1]?.kind === "recording"
+    ) {
+      lastSpanIndex += 1;
+    }
+    const uninterruptedSpans = timeline.spans.slice(firstSpanIndex, lastSpanIndex + 1);
+
     const compiled: CompiledRecording[] = [];
-    for (const span of timeline.spans) {
+    for (const span of uninterruptedSpans) {
       if (span.kind !== "recording") continue;
       const item = normalizeRecording(span.recording);
       const segments = item.recording.segments;

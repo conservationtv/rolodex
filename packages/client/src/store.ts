@@ -1,5 +1,6 @@
 import Hls, { type ErrorData } from "hls.js";
 
+import { GapClock } from "./gap-clock.js";
 import { ArchiveManifestClient, internalsOf } from "./manifest-client.js";
 import type { ISODateRange, ISODateString } from "./manifest.js";
 import { PlaylistFactory, type PlaylistLease } from "./playlist.js";
@@ -193,6 +194,8 @@ export class ArchivePlayerStore {
   private lease: PlaylistLease | undefined;
   private pendingMediaTime: number | undefined;
   private engine: Hls | undefined;
+  private gapClock: GapClock;
+  private playbackIntent = false;
   private lastMediaRecoveryAt = Number.NEGATIVE_INFINITY;
   private seekToken = 0;
   private hoverToken = 0;
@@ -224,6 +227,10 @@ export class ArchivePlayerStore {
       },
     };
     this.serverSnapshot = this.snapshot;
+    this.gapClock = new GapClock(
+      (playheadMs) => this.syncGapPlayhead(playheadMs),
+      () => this.handleGapEnded(),
+    );
   }
 
   async initialize(options?: ArchivePlayerInitializeOptions): Promise<void> {
@@ -275,11 +282,14 @@ export class ArchivePlayerStore {
     element.playbackRate = this.snapshot.playback.rate;
 
     const onTimeUpdate = (): void => this.syncFromElement(element);
-    const onPlay = (): void => this.mutate((snapshot) => {
-      const playback = { ...snapshot.playback, playing: true };
-      if (isMediaBound(snapshot)) return { ...snapshot, phase: "playing", playback };
-      return { ...snapshot, playback };
-    });
+    const onPlay = (): void => {
+      this.playbackIntent = true;
+      this.mutate((snapshot) => {
+        const playback = { ...snapshot.playback, playing: true };
+        if (isMediaBound(snapshot)) return { ...snapshot, phase: "playing", playback };
+        return { ...snapshot, playback };
+      });
+    };
     const onPause = (): void => this.mutate((snapshot) => {
       const playback = { ...snapshot.playback, playing: false };
       if (snapshot.phase === "playing") return { ...snapshot, phase: "paused", playback };
@@ -296,11 +306,9 @@ export class ArchivePlayerStore {
         if (!recovered) this.fail(cause);
       });
     };
-    const onEnded = (): void => this.mutate((snapshot) => {
-      const playback = { ...snapshot.playback, playing: false };
-      if (isMediaBound(snapshot)) return { ...snapshot, phase: "paused", playback };
-      return { ...snapshot, playback };
-    });
+    const onEnded = (): void => {
+      void this.handleEnded();
+    };
 
     element.addEventListener("timeupdate", onTimeUpdate);
     element.addEventListener("progress", onTimeUpdate);
@@ -341,6 +349,8 @@ export class ArchivePlayerStore {
     options: ArchivePlayerSeekOptions | undefined,
     allowReuse: boolean,
   ): Promise<void> {
+    this.gapClock.stop();
+    if (options?.autoplay !== undefined) this.playbackIntent = options.autoplay;
     const token = ++this.seekToken;
     const requestOptions = options?.signal ? { signal: options.signal } : undefined;
     try {
@@ -351,16 +361,8 @@ export class ArchivePlayerStore {
       const location = await this.manifests.locate(to, requestOptions);
       if (token !== this.seekToken) return;
       if (location.span.kind === "gap") {
-        this.element?.pause();
-        this.mutate((snapshot) => ({
-          ...carryBase(snapshot),
-          ...carryLoaded(snapshot),
-          phase: "gap",
-          stream: manifest.stream,
-          playhead: to,
-          location,
-          playback: { ...snapshot.playback, playing: false },
-        }));
+        const autoplay = options?.autoplay ?? this.playbackIntent;
+        this.enterGap(to, location, manifest.stream, autoplay);
         return;
       }
 
@@ -375,7 +377,8 @@ export class ArchivePlayerStore {
         const mediaTime = currentLease.mediaTimeAt(to);
         this.pendingMediaTime = mediaTime;
         const element = this.element;
-        const autoplay = options?.autoplay ?? this.snapshot.playback.playing;
+        const autoplay = options?.autoplay ?? this.playbackIntent;
+        this.playbackIntent = autoplay;
         if (element) element.currentTime = mediaTime;
         this.mutate((snapshot) => ({
           ...carryBase(snapshot),
@@ -394,6 +397,7 @@ export class ArchivePlayerStore {
         if (autoplay) {
           await element.play().catch(() => {
             if (token !== this.seekToken) return;
+            this.playbackIntent = false;
             this.mutate((snapshot) => ({
               ...carryBase(snapshot),
               ...carryLoaded(snapshot),
@@ -438,7 +442,8 @@ export class ArchivePlayerStore {
 
       const element = this.element;
       if (!element) return;
-      const autoplay = options?.autoplay ?? this.snapshot.playback.playing;
+      const autoplay = options?.autoplay ?? this.playbackIntent;
+      this.playbackIntent = autoplay;
       this.bindLease(element, lease);
       if (autoplay) {
         await element.play().catch(() => {
@@ -453,6 +458,15 @@ export class ArchivePlayerStore {
   }
 
   async play(): Promise<void> {
+    this.playbackIntent = true;
+    if (this.snapshot.phase === "gap") {
+      this.mutate((snapshot) => ({
+        ...snapshot,
+        playback: { ...snapshot.playback, playing: true },
+      }));
+      this.gapClock.play();
+      return;
+    }
     this.mutate((snapshot) => {
       const playback = { ...snapshot.playback, playing: true };
       if (isMediaBound(snapshot)) return { ...snapshot, phase: "playing", playback };
@@ -463,6 +477,7 @@ export class ArchivePlayerStore {
     try {
       await element.play();
     } catch {
+      this.playbackIntent = false;
       this.mutate((snapshot) => {
         const playback = { ...snapshot.playback, playing: false };
         if (snapshot.phase === "playing") return { ...snapshot, phase: "paused", playback };
@@ -472,6 +487,15 @@ export class ArchivePlayerStore {
   }
 
   pause(): void {
+    this.playbackIntent = false;
+    if (this.snapshot.phase === "gap") {
+      this.gapClock.pause();
+      this.mutate((snapshot) => ({
+        ...snapshot,
+        playback: { ...snapshot.playback, playing: false },
+      }));
+      return;
+    }
     this.element?.pause();
     this.mutate((snapshot) => {
       const playback = { ...snapshot.playback, playing: false };
@@ -487,6 +511,7 @@ export class ArchivePlayerStore {
 
   setPlaybackRate(rate: number): void {
     const bounded = Math.min(4, Math.max(0.25, rate));
+    this.gapClock.setRate(bounded);
     if (this.element) this.element.playbackRate = bounded;
     this.mutate((snapshot) => ({
       ...snapshot,
@@ -592,6 +617,7 @@ export class ArchivePlayerStore {
     this.disposed = true;
     this.seekToken += 1;
     this.hoverToken += 1;
+    this.gapClock.stop();
     this.detachElement?.();
     this.destroyEngine();
     this.lease?.revoke();
@@ -632,6 +658,122 @@ export class ArchivePlayerStore {
     const engine = this.engine;
     this.engine = undefined;
     engine?.destroy();
+  }
+
+  private enterGap(
+    playhead: ISODateString,
+    location: TimelineLocation,
+    stream: string,
+    autoplay: boolean,
+  ): void {
+    this.gapClock.stop();
+    this.playbackIntent = autoplay;
+    this.element?.pause();
+    this.destroyEngine();
+    this.lease?.revoke();
+    this.lease = undefined;
+    this.pendingMediaTime = undefined;
+    this.mutate((snapshot) => {
+      const loaded = carryLoaded(snapshot);
+      const next: GapArchivePlayerSnapshot = {
+        ...carryBase(snapshot),
+        phase: "gap",
+        stream,
+        playhead,
+        location,
+        playback: {
+          ...snapshot.playback,
+          playing: false,
+          mediaTime: 0,
+          bufferedSeconds: 0,
+        },
+      };
+      if (loaded?.coverage !== undefined) next.coverage = loaded.coverage;
+      if (loaded?.timeline !== undefined) next.timeline = loaded.timeline;
+      return next;
+    });
+    this.gapClock.configure(
+      Date.parse(playhead),
+      Date.parse(location.span.endedAt),
+      this.snapshot.playback.rate,
+    );
+    if (autoplay) {
+      this.mutate((snapshot) => ({
+        ...snapshot,
+        playback: { ...snapshot.playback, playing: true },
+      }));
+      this.gapClock.play();
+    }
+  }
+
+  private syncGapPlayhead(playheadMs: number): void {
+    if (this.snapshot.phase !== "gap") return;
+    const playhead = new Date(playheadMs).toISOString();
+    this.mutate((snapshot) => {
+      if (snapshot.phase !== "gap") return snapshot;
+      return {
+        ...snapshot,
+        playhead,
+        location: { ...snapshot.location, utc: playhead },
+      };
+    });
+  }
+
+  private handleGapEnded(): void {
+    if (this.snapshot.phase !== "gap") return;
+    const boundary = this.snapshot.location.span.endedAt;
+    void this.seekTo(boundary, { autoplay: this.playbackIntent }, false);
+  }
+
+  private async handleEnded(): Promise<void> {
+    const lease = this.lease;
+    if (!lease) {
+      this.playbackIntent = false;
+      this.mutate((snapshot) => {
+        const playback = { ...snapshot.playback, playing: false };
+        if (isMediaBound(snapshot)) return { ...snapshot, phase: "paused", playback };
+        return { ...snapshot, playback };
+      });
+      return;
+    }
+
+    const token = ++this.seekToken;
+    const boundary = lease.endedAt;
+    const autoplay = this.playbackIntent;
+    const loaded = carryLoaded(this.snapshot);
+    if (
+      loaded !== undefined
+      && loaded.coverage !== undefined
+      && utcNs(boundary) >= utcNs(loaded.coverage.endedAt)
+    ) {
+      this.mutate((snapshot) => {
+        const next: PausedArchivePlayerSnapshot = {
+          ...carryBase(snapshot),
+          ...loaded,
+          phase: "paused",
+          playhead: boundary,
+          playback: { ...snapshot.playback, playing: false },
+        };
+        return next;
+      });
+      this.playbackIntent = false;
+      return;
+    }
+
+    try {
+      const location = await this.manifests.locate(boundary);
+      if (this.disposed || token !== this.seekToken) return;
+      if (location.span.kind === "gap") {
+        const stream = carryLoaded(this.snapshot)?.stream;
+        if (stream !== undefined) this.enterGap(boundary, location, stream, autoplay);
+        return;
+      }
+      await this.seekTo(boundary, { autoplay }, false);
+    } catch (error) {
+      if (token === this.seekToken) {
+        this.fail(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
   }
 
   /** Skips damaged or missing media to the next random-access point: the

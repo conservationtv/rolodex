@@ -351,7 +351,7 @@ describe("PlaylistFactory", () => {
     expect(playlist.mediaTimeAt("2026-08-13T12:05:00.000Z")).toBe(300);
   });
 
-  it("emits a discontinuity and a new map at recording boundaries", async () => {
+  it("stops the playlist before a real archive gap", async () => {
     const { client } = createClient();
     const factory = new PlaylistFactory(client);
     const playlist = await factory.compile({
@@ -360,14 +360,16 @@ describe("PlaylistFactory", () => {
     });
 
     const lines = playlist.text.split("\n");
-    expect(lines.filter((line) => line === "#EXT-X-DISCONTINUITY")).toHaveLength(1);
-    expect(lines.filter((line) => line.startsWith("#EXT-X-MAP:"))).toHaveLength(2);
+    expect(lines).not.toContain("#EXT-X-DISCONTINUITY");
+    expect(lines.filter((line) => line.startsWith("#EXT-X-MAP:"))).toHaveLength(1);
     /* The window anchors at the preceding random-access segment (8s). */
     expect(playlist.startedAt).toBe("2026-08-13T12:00:08.000Z");
-    expect(playlist.endedAt).toBe("2026-08-14T00:05:00.000Z");
-    /* Media time is contiguous across the 11h45m archive gap. */
+    expect(playlist.endedAt).toBe("2026-08-13T12:10:00.000Z");
     expect(playlist.mediaTimeAt("2026-08-13T23:55:00.000Z")).toBe(592);
-    expect(playlist.utcAt(592)).toBe("2026-08-13T23:55:00.000Z");
+    expect(playlist.utcAt(592)).toBe("2026-08-13T12:10:00.000Z");
+    expect(lines).not.toContain(
+      "https://media.test/recordings/h265/cam/2026-08-13_23-55-00.mp4",
+    );
   });
 
   it("hands out revocable blob URL leases", async () => {
@@ -494,6 +496,44 @@ describe("ArchivePlayerStore", () => {
 
     store.dispose();
     playlists.dispose();
+  });
+
+  it("enters the real gap when playback reaches a recording boundary", async () => {
+    const { store } = createStore();
+    await store.seek("2026-08-13T12:09:00.000Z");
+    vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    await store.play();
+
+    /* Browsers dispatch pause before ended. That event may update the public
+     * snapshot, but it must not erase the intent to continue across a gap. */
+    // @ts-expect-error Simulate the pause listener without coupling this test to an HLS media element.
+    store.mutate((current) => ({
+      ...current,
+      playback: { ...current.playback, playing: false },
+    }));
+
+    // @ts-expect-error The private handler is exercised as the media element's ended event boundary.
+    await store.handleEnded();
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.phase).toBe("gap");
+    if (snapshot.phase !== "gap") throw new Error("expected a gap snapshot");
+    expect(snapshot).toMatchObject({
+      phase: "gap",
+      playhead: "2026-08-13T12:10:00.000Z",
+      playback: { playing: true },
+      location: {
+        span: {
+          kind: "gap",
+          startedAt: "2026-08-13T12:10:00.000Z",
+          endedAt: "2026-08-13T23:55:00.000Z",
+        },
+      },
+    });
+    expect(snapshot.active).toBeUndefined();
+    store.dispose();
+    vi.unstubAllGlobals();
   });
 
   it("adjusts the viewport with zoom, pan, and fit", async () => {
