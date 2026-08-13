@@ -1,5 +1,5 @@
 {
-  "name": "archive-scrubber-demo",
+  "name": "rolodex-demo",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -8,7 +8,7 @@
     "dev": "vite --force --open /archive-scrubber.html"
   },
   "dependencies": {
-    "@conservationtv/filofax": "workspace:*",
+    "@conservationtv/rolodex": "workspace:*",
     "@tanstack/react-query": "^5.85.5",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"

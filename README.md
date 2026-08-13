@@ -1,8 +1,9 @@
-# MediaMTX fMP4 Recording Processor
+# Rolodex
 
-A bounded Rust processor for completed MediaMTX fragmented MP4 recordings. One
-Queue invocation walks the recording metadata, extracts presentation-time
-thumbnail frames into one JPEG sprite sheet when decoding succeeds, and creates
+Rolodex is an archive playback and thumbnail system for completed MediaMTX
+fragmented MP4 recordings. One Queue invocation walks the recording metadata,
+extracts presentation-time thumbnail frames into one JPEG sprite sheet when
+decoding succeeds, and creates
 the archive control-plane artifacts independently. The
 same source builds as an H.264 Worker or an H.265 Worker; the unselected decoder
 is not linked.

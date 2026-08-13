@@ -11,7 +11,7 @@ import {
   ArchiveManifestClient,
   ArchivePlayerStore,
   S3ArchiveStorage,
-} from "@conservationtv/filofax";
+} from "@conservationtv/rolodex";
 
 import { archiveSource } from "./config.js";
 
@@ -608,7 +608,7 @@ function App() {
 
   return (
     <main>
-      <h1>Filofax demo</h1>
+      <h1>Rolodex demo</h1>
       <Configuration
         initialSource={archiveSource}
         onConnect={(source) => setConnection((current) => ({

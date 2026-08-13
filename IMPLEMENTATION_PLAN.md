@@ -1,4 +1,4 @@
-# MediaMTX fMP4 Thumbnail Worker — Implementation Plan
+# Rolodex — Implementation Plan
 
 ## Goal
 

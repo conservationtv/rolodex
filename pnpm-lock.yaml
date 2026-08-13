@@ -14,7 +14,7 @@ importers:
 
   demo:
     dependencies:
-      '@conservationtv/filofax':
+      '@conservationtv/rolodex':
         specifier: workspace:*
         version: link:../packages/client
       '@tanstack/react-query':
