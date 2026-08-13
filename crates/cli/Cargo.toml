@@ -1,0 +1,18 @@
+[package]
+name = "media-thumb"
+description = "Local MediaMTX thumbnail, archive-index, and init processor"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+default = []
+codec-h264 = ["thumbnail-core/codec-h264"]
+codec-h265 = ["thumbnail-core/codec-h265"]
+
+[dependencies]
+async-trait.workspace = true
+futures = "0.3.31"
+serde_json.workspace = true
+thumbnail-core = { path = "../thumbnail-core", default-features = false }
