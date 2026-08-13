@@ -13,7 +13,6 @@ import {
   S3ArchiveStorage,
 } from "@conservationtv/rolodex";
 
-import { archiveSource } from "./config.js";
 
 const {
   useCallback,
@@ -470,20 +469,18 @@ function Player({ latest, manifests, connectionId }) {
   );
 }
 
-function sourceFields(source) {
-  return {
-    bucket: source.bucket,
-    root: source.root,
-    manifest: source.manifest,
-    region: source.region,
-    endpoint: source.endpoint,
-    accessKeyId: source.auth.accessKeyId,
-    secretAccessKey: source.auth.secretAccessKey,
-  };
-}
+const emptyFields = {
+  bucket: "",
+  root: "",
+  manifest: "",
+  region: "auto",
+  endpoint: "",
+  accessKeyId: "",
+  secretAccessKey: "",
+};
 
-function Configuration({ initialSource, onConnect }) {
-  const [fields, setFields] = useState(() => sourceFields(initialSource));
+function Configuration({ onConnect }) {
+  const [fields, setFields] = useState(emptyFields);
   const update = (event) => {
     const { name, value } = event.currentTarget;
     setFields((current) => ({ ...current, [name]: value }));
@@ -603,24 +600,25 @@ function Archive({ source, connectionId }) {
 function App() {
   const [connection, setConnection] = useState({
     id: 0,
-    source: archiveSource,
+    source: undefined,
   });
 
   return (
     <main>
       <h1>Rolodex demo</h1>
       <Configuration
-        initialSource={archiveSource}
         onConnect={(source) => setConnection((current) => ({
           id: current.id + 1,
           source,
         }))}
       />
-      <Archive
-        key={connection.id}
-        source={connection.source}
-        connectionId={connection.id}
-      />
+      {connection.source && (
+        <Archive
+          key={connection.id}
+          source={connection.source}
+          connectionId={connection.id}
+        />
+      )}
     </main>
   );
 }
