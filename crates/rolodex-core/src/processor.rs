@@ -35,7 +35,6 @@ pub struct ProcessorOptions {
     pub thumbnail_interval_ns: Option<u64>,
     pub max_thumbnail_frames: u32,
     pub max_sprite_pixels: u64,
-    pub require_media_mtx: bool,
     pub fragment_read_ahead_bytes: usize,
     pub max_samples_indexed: u64,
     pub limits: PipelineLimits,
@@ -54,7 +53,6 @@ impl Default for ProcessorOptions {
             thumbnail_interval_ns: None,
             max_thumbnail_frames: 1_000,
             max_sprite_pixels: 20_000_000,
-            require_media_mtx: true,
             fragment_read_ahead_bytes: 16 * 1024,
             max_samples_indexed: 1_000_000,
             limits,
@@ -415,9 +413,6 @@ where
                         expected: BUILD_CODEC,
                         actual: parsed.video.config.codec,
                     });
-                }
-                if options.require_media_mtx && parsed.media_mtx.is_none() {
-                    return Err(Error::Unsupported("MediaMTX mtxi metadata is required"));
                 }
                 movie = Some(parsed);
                 moov_bytes = Some(bytes);
@@ -1181,10 +1176,7 @@ mod tests {
     }
 
     fn synthetic_options() -> ProcessorOptions {
-        ProcessorOptions {
-            require_media_mtx: false,
-            ..ProcessorOptions::default()
-        }
+        ProcessorOptions::default()
     }
 
     fn synthetic_identity() -> SourceIdentity {

@@ -101,7 +101,6 @@ overlap.
 | `THUMBNAIL_INTERVAL` | `10s` | Gap between sprite frames; accepts integer `ns`, `us`, `ms`, `s`, `m`, or `h` values. |
 | `MAX_THUMBNAIL_FRAMES` | `1000` | Hard cell-count cap for one recording sprite. |
 | `MAX_SPRITE_PIXELS` | `20000000` | Hard total sprite pixel cap; cells scale down together to fit it. |
-| `REQUIRE_MEDIAMTX` | `true` | Reject recordings without `mtxi` wall-clock identity. |
 | `INITIAL_READ_BYTES` | `262144` | Cached R2 prefix bytes. |
 | `FRAGMENT_READ_AHEAD_BYTES` | `1048576` | Part metadata probe/read-ahead; 1 MiB amortizes serial R2 latency across many MediaMTX parts. |
 | `MAX_R2_BYTES_PER_JOB` | `134217728` | Hard total range-read cap. |

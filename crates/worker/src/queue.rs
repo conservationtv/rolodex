@@ -58,8 +58,6 @@ impl Config {
         )?;
         options.max_samples_indexed =
             optional_number(env, "MAX_SAMPLES_INDEXED", options.max_samples_indexed)?;
-        options.require_media_mtx =
-            optional_bool(env, "REQUIRE_MEDIAMTX", options.require_media_mtx)?;
         options.limits.initial_read_bytes =
             optional_number(env, "INITIAL_READ_BYTES", options.limits.initial_read_bytes)?;
         options.limits.max_total_bytes_read = optional_number(
@@ -123,17 +121,6 @@ where
         Some(value) => value
             .parse()
             .map_err(|_| format!("environment variable {name} is not a valid number")),
-        None => Ok(default),
-    }
-}
-
-fn optional_bool(env: &Env, name: &str, default: bool) -> std::result::Result<bool, String> {
-    match optional_string(env, name).as_deref() {
-        Some("true" | "1") => Ok(true),
-        Some("false" | "0") => Ok(false),
-        Some(_) => Err(format!(
-            "environment variable {name} must be true, false, 1, or 0"
-        )),
         None => Ok(default),
     }
 }

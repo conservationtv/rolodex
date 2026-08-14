@@ -17,7 +17,7 @@ verify_codec() {
     local base output_dir thumb dimensions log score
     base="$(basename "$fixture" .mp4)"
     output_dir="$work_dir/$codec-$base"
-    "$repo_dir/target/release/rolodex" --allow-missing-mtxi \
+    "$repo_dir/target/release/rolodex" \
       "$fixture" "$output_dir" >"$work_dir/$codec-$base.json"
     thumb="$output_dir/thumbnail.jpg"
     test -s "$output_dir/index.json"

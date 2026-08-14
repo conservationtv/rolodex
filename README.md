@@ -79,9 +79,8 @@ quality 78. An interval produces
 `max(1, floor(video_duration / interval))` cells at elapsed times
 `0, interval, 2 × interval, …`; without the option the CLI emits one cell. The
 directory always receives `index.json` and `init/<sha256>.mp4`, plus
-`thumbnail.jpg` when thumbnail generation succeeds. `--allow-missing-mtxi` is available only for
-synthetic/legacy local fixtures; the deployed Worker requires MediaMTX
-wall-clock metadata.
+`thumbnail.jpg` when thumbnail generation succeeds. MediaMTX `mtxi` metadata is
+extracted when present but is not required.
 
 ## Test and verify
 

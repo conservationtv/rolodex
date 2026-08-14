@@ -26,10 +26,7 @@ fn process<S: ByteSource + ?Sized>(source: &S) -> Result<ProcessorOutput> {
             object_key: "fixture.mp4".into(),
             etag: "fixture".into(),
         },
-        ProcessorOptions {
-            require_media_mtx: false,
-            ..ProcessorOptions::default()
-        },
+        ProcessorOptions::default(),
     ))
 }
 
@@ -42,6 +39,10 @@ fn creates_thumbnail_from_selected_codec_fixture() {
     assert_eq!(output.metrics.source_height, 180);
     assert_eq!(output.metrics.thumbnail_samples_decoded, 1);
     assert_eq!(output.metrics.parts_indexed, 1);
+    assert_eq!(output.metadata.recording.stream_id, None);
+    assert_eq!(output.metadata.recording.segment_number, None);
+    assert_eq!(output.metadata.recording.start_dts_ns, None);
+    assert_eq!(output.metadata.recording.start_utc_ns, None);
 }
 
 #[test]

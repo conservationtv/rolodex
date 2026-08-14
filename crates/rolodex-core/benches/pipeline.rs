@@ -140,10 +140,7 @@ fn benchmark_stages(criterion: &mut Criterion) {
                     object_key: "fixture.mp4".into(),
                     etag: "fixture".into(),
                 },
-                ProcessorOptions {
-                    require_media_mtx: false,
-                    ..ProcessorOptions::default()
-                },
+                ProcessorOptions::default(),
             ))
             .unwrap()
         })

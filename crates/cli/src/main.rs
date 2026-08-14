@@ -60,7 +60,7 @@ struct Args {
 
 fn usage() -> &'static str {
     "usage: rolodex [--max-width N] [--max-height N] [--quality N] \
-     [--thumbnail-interval DURATION] [--allow-missing-mtxi] INPUT.mp4 OUTPUT_DIRECTORY"
+     [--thumbnail-interval DURATION] INPUT.mp4 OUTPUT_DIRECTORY"
 }
 
 fn parse_args() -> std::result::Result<Args, String> {
@@ -81,7 +81,6 @@ fn parse_args() -> std::result::Result<Args, String> {
                         .map_err(|error| format!("invalid --thumbnail-interval: {error}"))?,
                 );
             }
-            "--allow-missing-mtxi" => options.require_media_mtx = false,
             "-h" | "--help" => return Err(usage().into()),
             flag if flag.starts_with('-') => {
                 return Err(format!("unknown option {flag}\n{}", usage()));
