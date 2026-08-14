@@ -106,8 +106,8 @@ prove the aspirational 64 MiB target.
 
 ## Image oracle
 
-`scripts/verify-cloudflare-staging.sh` downloaded all seven stored staging
-thumbnails and compared each with FFmpeg's first decoded frame.
+The staging verification downloaded all seven stored thumbnails and compared
+each with FFmpeg's first decoded frame.
 
 | Fixture | SSIM |
 |---|---:|

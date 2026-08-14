@@ -60,6 +60,11 @@ impl Config {
             optional_number(env, "MAX_SAMPLES_INDEXED", options.max_samples_indexed)?;
         options.limits.initial_read_bytes =
             optional_number(env, "INITIAL_READ_BYTES", options.limits.initial_read_bytes)?;
+        options.limits.full_read_threshold_bytes = optional_number(
+            env,
+            "FULL_READ_THRESHOLD_BYTES",
+            options.limits.full_read_threshold_bytes,
+        )?;
         options.limits.max_total_bytes_read = optional_number(
             env,
             "MAX_R2_BYTES_PER_JOB",

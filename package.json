@@ -3,8 +3,12 @@
   "private": true,
   "packageManager": "pnpm@10.22.0",
   "scripts": {
+    "build:worker": "./scripts/build-worker.sh",
+    "build:worker:h265": "CODEC=h265 ./scripts/build-worker.sh",
     "build:client": "pnpm --filter @conservationtv/rolodex build",
     "build:demo": "pnpm --filter rolodex-demo build",
+    "deploy": "wrangler deploy",
+    "deploy:h265": "CODEC=h265 wrangler deploy --name rolodex-h265",
     "dev:demo": "pnpm --filter rolodex-demo dev",
     "lint:client": "pnpm --filter @conservationtv/rolodex lint",
     "test:client": "pnpm --filter @conservationtv/rolodex test",

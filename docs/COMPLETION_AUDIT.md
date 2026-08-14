@@ -17,7 +17,7 @@ larger production-like run.
 | 8. Annex-B conversion | Complete | Length sizes, NAL counts/lengths, allocation checks, conversion tests, and fuzz target pass. |
 | 9. First usable picture | Complete | Flags plus IDR/IRAP inspection; decoder continues across bounded follow-up AUs until its first output and stops immediately. |
 | 10. Image path | Complete | Planar 4:2:0 area downscale precedes YCbCr JPEG; 8/10-bit paths and FFmpeg SSIM oracles pass. |
-| 11. Memory discipline | Partial | Whole files are never buffered, counts/bytes are bounded, native 4K RSS is recorded, and 4K Workers succeed; exact peak Worker memory is unavailable. |
+| 11. Memory discipline | Partial | Files up to the configured 16 MiB threshold are buffered once and shared; larger files use bounded ranges. Counts/bytes are bounded, native 4K RSS is recorded, and 4K Workers succeed; exact peak Worker memory is unavailable. |
 | 12. Queue Worker | Complete in staging | Actual R2 create events produced remote JPEGs; retries, permanent failures, metadata, and acknowledgements are observed. |
 | 13. Tiny batches | Complete | Both staging consumers use batch size 1 and concurrency 2. |
 | 14. Correctness corpus | Partial | Seven synthetic/MediaMTX fixtures and all named profiles pass locally/remotely; vendor camera corpus is unavailable. |

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-case "${CODEC:-}" in
+case "${CODEC:-h264}" in
   h264) codec_feature="codec-h264" ;;
   h265) codec_feature="codec-h265" ;;
   *)
@@ -11,6 +11,15 @@ case "${CODEC:-}" in
 esac
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if ! command -v cargo >/dev/null 2>&1; then
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal
+  # shellcheck source=/dev/null
+  source "$HOME/.cargo/env"
+fi
+if command -v rustup >/dev/null 2>&1; then
+  rustup target add wasm32-unknown-unknown
+fi
 if ! command -v worker-build >/dev/null 2>&1; then
   cargo install --locked worker-build --version 0.8.5
 fi

@@ -7,13 +7,8 @@
 - A Queue for object-create notifications and a dead-letter Queue.
 - Node/pnpm for Wrangler and Rust with `wasm32-unknown-unknown` installed.
 
-The configuration is pinned to the user-authorized `0def` account:
-
-```text
-Account ID: 0def86f295b15a1a2d012774b38b04f9
-```
-
-The root names remain templates for a future custom/production environment:
+The checked-in `wrangler.jsonc` is an account-independent H.264 template. Its
+default resource names are:
 
 ```text
 R2 bucket: rolodex-recordings
@@ -22,37 +17,74 @@ DLQ: rolodex-dead-letter
 R2 binding: MEDIA_BUCKET
 ```
 
-Do not use the root template for production without an intentional review.
 Keep `max_batch_size` and `max_concurrency` at 1. The mutable daily and stream
 archive manifests also use ETag preconditions, but serial Queue consumption is
 the normal single-writer path.
 
-Two isolated staging environments are live in the pinned account:
+## Deploy to Cloudflare
 
-| Environment | Worker/Queue | Source prefix |
-|---|---|---|
-| `staging_h264` | `rolodex-h264-staging` | `recordings/h264/` |
-| `staging_h265` | `rolodex-h265-staging` | `recordings/h265/` |
+Deploy to Cloudflare reads `wrangler.jsonc`, copies the public GitHub or GitLab
+repository into the user's account, and deploys it with Workers Builds. The R2
+bucket, consumer Queue, and dead-letter Queue are provisioned and bound during
+that flow. Resource names can be changed on the setup page.
 
-They share only the dedicated `rolodex-staging` R2 bucket. Each has
-its own DLQ. Public `workers.dev` and preview URLs are disabled.
+The repository does not currently have a public Git remote. Once it does, add
+this badge to the README with that URL:
+
+```md
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=<PUBLIC_GIT_REPOSITORY_URL>)
+```
+
+The template defaults to H.264. `scripts/build-worker.sh` installs a minimal
+Rust toolchain when Workers Builds does not provide one, adds the
+`wasm32-unknown-unknown` target, installs the pinned `worker-build`, and builds
+the Worker.
+
+### Required one-time notification
+
+The deployment creates and connects the Worker resources, but R2 event
+notifications are not part of the Wrangler configuration schema. Run this
+command exactly once after the first deployment:
+
+```bash
+npx wrangler r2 bucket notification create rolodex-recordings \
+  --event-type object-create \
+  --queue rolodex-jobs \
+  --prefix "recordings/" \
+  --suffix ".mp4"
+```
+
+Replace `rolodex-recordings`, `rolodex-jobs`, or `recordings/` if you changed
+their defaults during deployment. The suffix should remain lowercase `.mp4`.
+Before running the command again, inspect the bucket's existing notification
+rules in the Cloudflare dashboard; overlapping object-create rules are rejected.
 
 ## Build and deploy one codec
 
+Fork and clone the repository, then create the resources and deploy directly
+with Wrangler:
+
 ```bash
+git clone https://github.com/<you>/<repo>.git
+cd <repo>
 pnpm install
-CODEC=h264 ./scripts/deploy.sh
+npx wrangler login
+npx wrangler r2 bucket create rolodex-recordings
+npx wrangler queues create rolodex-jobs
+npx wrangler queues create rolodex-dead-letter
+npm run deploy # or: npm run deploy:h265
+npx wrangler r2 bucket notification create rolodex-recordings \
+  --event-type object-create --queue rolodex-jobs \
+  --prefix "recordings/" --suffix ".mp4"
 ```
 
-or:
+Edit `wrangler.jsonc` before running these commands if you want different
+resource names or prefixes. Create the notification only once.
 
-```bash
-CODEC=h265 ./scripts/deploy.sh
-```
-
-`CODEC` is required. It selects exactly one Cargo feature and also defaults the
-Worker name to `rolodex-h264` or `rolodex-h265`. Set
-`WORKER_NAME` to override the name.
+The portable configuration defaults to H.264 and the `rolodex-h264` Worker
+name. `deploy:h265` selects the H.265 Cargo feature and deploys as
+`rolodex-h265`. For another name, run `CODEC=h264 npx wrangler deploy --name
+<name>` (or use `CODEC=h265`).
 
 The build uses `worker-build --no-panic-recovery`: the release profile is
 `panic=abort`, and the panic-recovery module path currently requires a WASM
@@ -60,32 +92,8 @@ externref table that the decoder modules do not emit. Panics therefore fail the
 invocation and follow Queue retry behavior; input parsing itself returns checked
 errors and is fuzzable.
 
-Redeploy staging with an environment that must match the codec:
-
-```bash
-CODEC=h264 WRANGLER_ENV=staging_h264 ./scripts/deploy.sh
-CODEC=h265 WRANGLER_ENV=staging_h265 ./scripts/deploy.sh
-```
-
 The WASM target enables `simd128`; the Cloudflare 4K AVC A/B result reduced CPU
 from 868 ms to 473 ms. See `docs/STAGING_RESULTS.md`.
-
-## Create the R2 notification
-
-For a new target bucket and Queue only, create the notification with:
-
-```bash
-R2_BUCKET=rolodex-recordings \
-QUEUE_NAME=rolodex-jobs \
-SOURCE_PREFIX=recordings/ \
-./scripts/configure-event-notification.sh
-```
-
-This is an external state change and the script should be run once per intended
-environment. The two staging notifications already exist; do not rerun the
-command for them. It configures object-create events filtered to the source
-prefix and lowercase `.mp4` suffix. Inspect existing rules first to avoid
-overlap.
 
 ## Worker variables
 
@@ -102,6 +110,7 @@ overlap.
 | `MAX_THUMBNAIL_FRAMES` | `1000` | Hard cell-count cap for one recording sprite. |
 | `MAX_SPRITE_PIXELS` | `20000000` | Hard total sprite pixel cap; cells scale down together to fit it. |
 | `INITIAL_READ_BYTES` | `262144` | Cached R2 prefix bytes. |
+| `FULL_READ_THRESHOLD_BYTES` | `16777216` | Files at or below this size are fetched once and shared from memory by indexing and thumbnail extraction. |
 | `FRAGMENT_READ_AHEAD_BYTES` | `1048576` | Part metadata probe/read-ahead; 1 MiB amortizes serial R2 latency across many MediaMTX parts. |
 | `MAX_R2_BYTES_PER_JOB` | `134217728` | Hard total range-read cap. |
 | `MAX_SAMPLES_DECODED` | `100000` | Hard cumulative access-unit decode cap across all sprite cells. |
@@ -177,11 +186,9 @@ index metadata and do not fail the Queue job.
    stream manifests.
 7. Create the production notification only after staging gates pass.
 
-The current controlled staging evidence is in `docs/STAGING_RESULTS.md`. Run
-`scripts/verify-cloudflare-staging.sh` after redeploying this processor to
-redownload both MediaMTX fixture artifact sets, validate their init MP4s, and
-compare their JPEGs with FFmpeg. Synthetic files remain native decoder tests
-because production artifact processing requires `mtxi`.
+The current controlled staging evidence is in `docs/STAGING_RESULTS.md`.
+Synthetic files remain native decoder tests; the processor accepts them without
+MediaMTX metadata, while archive-manifest publication still needs a UTC start.
 
 Cloudflare references:
 

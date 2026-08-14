@@ -20,13 +20,20 @@ fn other_fixture() -> Vec<u8> {
 }
 
 fn process<S: ByteSource + ?Sized>(source: &S) -> Result<ProcessorOutput> {
+    process_with_options(source, ProcessorOptions::default())
+}
+
+fn process_with_options<S: ByteSource + ?Sized>(
+    source: &S,
+    options: ProcessorOptions,
+) -> Result<ProcessorOutput> {
     futures::executor::block_on(process_recording(
         source,
         SourceIdentity {
             object_key: "fixture.mp4".into(),
             etag: "fixture".into(),
         },
-        ProcessorOptions::default(),
+        options,
     ))
 }
 
@@ -39,6 +46,8 @@ fn creates_thumbnail_from_selected_codec_fixture() {
     assert_eq!(output.metrics.source_height, 180);
     assert_eq!(output.metrics.thumbnail_samples_decoded, 1);
     assert_eq!(output.metrics.parts_indexed, 1);
+    assert_eq!(output.metrics.range_requests, 1);
+    assert_eq!(output.metrics.bytes_read, output.metrics.source_bytes);
     assert_eq!(output.metadata.recording.stream_id, None);
     assert_eq!(output.metadata.recording.segment_number, None);
     assert_eq!(output.metadata.recording.start_dts_ns, None);
@@ -109,7 +118,9 @@ fn skips_a_large_top_level_box_without_fetching_its_payload() {
     padded.extend_from_slice(&fixture[first_box_size..]);
 
     let source = rolodex_core::source::MemorySource::new(padded);
-    let output = process(&source).unwrap();
+    let mut options = ProcessorOptions::default();
+    options.limits.full_read_threshold_bytes = options.limits.initial_read_bytes;
+    let output = process_with_options(&source, options).unwrap();
 
     assert!(output.metrics.source_bytes > 2 * 1024 * 1024);
     assert!(output.metrics.range_requests >= 2);

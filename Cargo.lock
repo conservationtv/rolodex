@@ -550,27 +550,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
-name = "rolodex"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "futures",
- "serde_json",
- "rolodex-core",
-]
-
-[[package]]
-name = "rolodex-worker"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "serde",
- "serde_json",
- "rolodex-core",
- "worker",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -732,6 +711,43 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "rolodex"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "rolodex-core",
+ "serde_json",
+]
+
+[[package]]
+name = "rolodex-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "criterion",
+ "futures",
+ "jpeg-encoder",
+ "rust_h265",
+ "rusty_h264-decoder",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
+name = "rolodex-worker"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "rolodex-core",
+ "serde",
+ "serde_json",
+ "worker",
+]
 
 [[package]]
 name = "rust_h265"
@@ -955,22 +971,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
-]
-
-[[package]]
-name = "rolodex-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "criterion",
- "futures",
- "jpeg-encoder",
- "rust_h265",
- "rusty_h264-decoder",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
 ]
 
 [[package]]

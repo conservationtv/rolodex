@@ -14,10 +14,10 @@ measurement.
 ## WASM packaging and size
 
 ```bash
-./scripts/build-h264.sh
+npm run build:worker
 ls -lh crates/worker/build/worker/index.wasm
 
-./scripts/build-h265.sh
+npm run build:worker:h265
 ls -lh crates/worker/build/worker/index.wasm
 ```
 
@@ -51,12 +51,7 @@ Use Cloudflare's recorded CPU time for economics. Worker timers are not a CPU
 profiler and local native/WASM wall time is only comparative.
 
 The controlled `0def` staging run, resource IDs, SIMD A/B, 4K results, and
-remaining evidence gaps are recorded in `docs/STAGING_RESULTS.md`. Verify the
-stored remote JPEG corpus at any time with:
-
-```bash
-./scripts/verify-cloudflare-staging.sh
-```
+remaining evidence gaps are recorded in `docs/STAGING_RESULTS.md`.
 
 ## Initial gates
 

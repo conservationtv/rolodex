@@ -6,6 +6,7 @@ use crate::{
 #[derive(Debug, Clone, Copy)]
 pub struct PipelineLimits {
     pub initial_read_bytes: usize,
+    pub full_read_threshold_bytes: usize,
     pub max_init_bytes: usize,
     pub max_fragment_bytes: usize,
     pub max_sample_bytes: usize,
@@ -20,6 +21,7 @@ impl Default for PipelineLimits {
     fn default() -> Self {
         Self {
             initial_read_bytes: 256 * 1024,
+            full_read_threshold_bytes: 16 * 1024 * 1024,
             max_init_bytes: 8 * 1024 * 1024,
             max_fragment_bytes: 8 * 1024 * 1024,
             max_sample_bytes: 32 * 1024 * 1024,
@@ -35,6 +37,7 @@ impl Default for PipelineLimits {
 impl PipelineLimits {
     pub(crate) fn validate(self) -> Result<Self> {
         if self.initial_read_bytes < 16
+            || self.full_read_threshold_bytes < self.initial_read_bytes
             || self.initial_read_bytes as u64 > self.max_total_bytes_read
             || self.max_init_bytes < 16
             || self.max_fragment_bytes < 16
@@ -53,7 +56,13 @@ impl PipelineLimits {
     }
 }
 
-pub(crate) struct RangeReader<'a, S: ByteSource + ?Sized> {
+/// A shared logical file handle over an arbitrary byte source.
+///
+/// Callers read file offsets without knowing whether bytes came from a full
+/// in-memory object, the cached prefix, or a backend range request. Keeping one
+/// handle for indexing and thumbnail extraction lets both phases reuse the
+/// same cache without exposing storage-specific details.
+pub(crate) struct FileHandle<'a, S: ByteSource + ?Sized> {
     source: &'a S,
     object_len: u64,
     prefix: Vec<u8>,
@@ -64,10 +73,20 @@ pub(crate) struct RangeReader<'a, S: ByteSource + ?Sized> {
     bytes_read: u64,
 }
 
-impl<'a, S: ByteSource + ?Sized> RangeReader<'a, S> {
+impl<'a, S: ByteSource + ?Sized> FileHandle<'a, S> {
     pub(crate) async fn new(source: &'a S, limits: PipelineLimits) -> Result<Self> {
-        let prefix_len = usize::try_from(source.len().min(limits.initial_read_bytes as u64))
+        let desired_prefix_len = if source.len() <= limits.full_read_threshold_bytes as u64
+            && source.len() <= limits.max_total_bytes_read
+        {
+            source.len()
+        } else {
+            source.len().min(limits.initial_read_bytes as u64)
+        };
+        let prefix_len = usize::try_from(desired_prefix_len)
             .map_err(|_| Error::Limit("prefix length does not fit memory"))?;
+        if prefix_len as u64 > limits.max_total_bytes_read {
+            return Err(Error::Limit("initial read exceeds job byte limit"));
+        }
         let prefix = source.range(0, prefix_len).await?;
         if prefix.len() != prefix_len {
             return Err(Error::Source(format!(
@@ -236,15 +255,43 @@ mod tests {
         };
         let limits = PipelineLimits {
             initial_read_bytes: 16,
+            full_read_threshold_bytes: 16,
             max_total_bytes_read: 32,
             ..PipelineLimits::default()
         };
-        let mut reader = futures::executor::block_on(RangeReader::new(&source, limits)).unwrap();
+        let mut reader = futures::executor::block_on(FileHandle::new(&source, limits)).unwrap();
         let data = futures::executor::block_on(reader.read(8, 16)).unwrap();
 
         assert_eq!(data, (8..24).collect::<Vec<_>>());
         assert_eq!(*source.reads.borrow(), vec![(0, 16), (16, 8)]);
         assert_eq!(reader.requests(), 2);
         assert_eq!(reader.bytes_read(), 24);
+    }
+
+    #[test]
+    fn a_small_file_is_fetched_once_and_shared_by_all_reads() {
+        let source = RecordingSource {
+            data: (0..64).collect(),
+            reads: RefCell::new(Vec::new()),
+        };
+        let limits = PipelineLimits {
+            initial_read_bytes: 16,
+            full_read_threshold_bytes: 64,
+            max_total_bytes_read: 64,
+            ..PipelineLimits::default()
+        };
+        let mut file = futures::executor::block_on(FileHandle::new(&source, limits)).unwrap();
+
+        assert_eq!(
+            futures::executor::block_on(file.read(40, 8)).unwrap(),
+            (40..48).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            futures::executor::block_on(file.read(8, 8)).unwrap(),
+            (8..16).collect::<Vec<_>>()
+        );
+        assert_eq!(*source.reads.borrow(), vec![(0, 64)]);
+        assert_eq!(file.requests(), 1);
+        assert_eq!(file.bytes_read(), 64);
     }
 }

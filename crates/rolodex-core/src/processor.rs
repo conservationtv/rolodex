@@ -13,7 +13,7 @@ use crate::{
         SampleLocation, TrackKind, build_canonical_init, fourcc_string, parse_archive_moov,
         parse_indexed_fragment,
     },
-    reader::{PipelineLimits, RangeReader},
+    reader::{FileHandle, PipelineLimits},
     scale::{scale_yuv420, scale_yuv420_to_dimensions},
     sprite::{SpriteBuilder, SpriteLayout},
 };
@@ -367,7 +367,7 @@ where
         source_bytes: source.len(),
         ..ProcessorMetrics::default()
     };
-    let mut reader = RangeReader::new(source, options.limits).await?;
+    let mut reader = FileHandle::new(source, options.limits).await?;
     let mut offset = 0;
     let mut saw_ftyp = false;
     let mut movie = None;
@@ -758,7 +758,7 @@ fn collect_video_samples(
 }
 
 async fn build_thumbnail_sprite<S, D>(
-    reader: &mut RangeReader<'_, S>,
+    reader: &mut FileHandle<'_, S>,
     movie: &ArchiveMovie,
     samples: &[TimedVideoSample],
     timing: VideoTiming,
@@ -988,7 +988,7 @@ fn scale_first_sprite_frame(
 }
 
 async fn decode_thumbnail_sample<S, D>(
-    reader: &mut RangeReader<'_, S>,
+    reader: &mut FileHandle<'_, S>,
     movie: &ArchiveMovie,
     samples: &[TimedVideoSample],
     selected_index: usize,
@@ -1064,7 +1064,7 @@ where
 }
 
 async fn read_thumbnail_sample<S: ByteSource + ?Sized>(
-    reader: &mut RangeReader<'_, S>,
+    reader: &mut FileHandle<'_, S>,
     location: SampleLocation,
     metrics: &mut ProcessorMetrics,
     options: ProcessorOptions,

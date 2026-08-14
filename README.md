@@ -108,33 +108,62 @@ done
 
 ## Build Worker variants
 
-Install requirements: the Rust WASM target and `worker-build` 0.8.5. The build
-script installs the latter when absent.
+The build script installs Rust, the WASM target, and `worker-build` 0.8.5 when
+they are absent.
 
 ```bash
-./scripts/build-h264.sh
-./scripts/build-h265.sh
+npm run build:worker       # H.264
+npm run build:worker:h265  # H.265
 ```
 
-For a custom/production configuration, codec selection remains one input:
+### Deploy to Cloudflare
+
+The checked-in configuration is a portable H.264 template. A Deploy to
+Cloudflare button can create the Worker, R2 bucket, Queue, and dead-letter
+Queue in the deployer's account. Once this repository has a public GitHub or
+GitLab URL, add the button using:
+
+```md
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=<PUBLIC_GIT_REPOSITORY_URL>)
+```
+
+Cloudflare cannot declare an R2 event notification in `wrangler.jsonc`. After
+the first deployment, run this command once to send new MP4 uploads to the
+Worker's Queue:
 
 ```bash
-CODEC=h264 ./scripts/deploy.sh
-CODEC=h265 ./scripts/deploy.sh
+npx wrangler r2 bucket notification create rolodex-recordings \
+  --event-type object-create \
+  --queue rolodex-jobs \
+  --prefix "recordings/" \
+  --suffix ".mp4"
 ```
 
-The root R2/Queue names are templates and must be reconciled before using those
-commands. Deployment and notification setup are described in
+If you changed the bucket, Queue, or source prefix in the deployment form, use
+those values in the command. Do not rerun it without first inspecting existing
+rules; Cloudflare rejects overlapping notification rules.
+
+### Deploy manually
+
+Fork the repository, then:
+
+```bash
+git clone https://github.com/<you>/<repo>.git
+cd <repo>
+npm install
+npx wrangler login
+npx wrangler r2 bucket create rolodex-recordings
+npx wrangler queues create rolodex-jobs
+npx wrangler queues create rolodex-dead-letter
+npm run deploy # or: npm run deploy:h265
+npx wrangler r2 bucket notification create rolodex-recordings \
+  --event-type object-create --queue rolodex-jobs \
+  --prefix "recordings/" --suffix ".mp4"
+```
+
+Change the resource names and prefixes in `wrangler.jsonc` first if you do not
+want the defaults. Run the notification command only once. More detail is in
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
-
-The checked-in `staging_h264` and `staging_h265` environments are already
-pinned to the `0def…04f9` account and its isolated staging resources:
-
-```bash
-CODEC=h264 WRANGLER_ENV=staging_h264 ./scripts/deploy.sh
-CODEC=h265 WRANGLER_ENV=staging_h265 ./scripts/deploy.sh
-./scripts/verify-cloudflare-staging.sh
-```
 
 ## Supported input assumptions
 
