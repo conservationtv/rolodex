@@ -2,6 +2,7 @@ use crate::{
     ByteSource, Error, Result,
     mp4::{BoxHeader, read_top_level_header},
 };
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PipelineLimits {
@@ -65,12 +66,20 @@ impl PipelineLimits {
 pub(crate) struct FileHandle<'a, S: ByteSource + ?Sized> {
     source: &'a S,
     object_len: u64,
-    prefix: Vec<u8>,
+    prefix: Arc<[u8]>,
     window_offset: u64,
-    window: Vec<u8>,
+    window: Arc<[u8]>,
     limits: PipelineLimits,
     requests: u32,
     bytes_read: u64,
+}
+
+#[derive(Clone)]
+pub(crate) struct FileCache {
+    object_len: u64,
+    prefix: Arc<[u8]>,
+    window_offset: u64,
+    window: Arc<[u8]>,
 }
 
 impl<'a, S: ByteSource + ?Sized> FileHandle<'a, S> {
@@ -97,13 +106,44 @@ impl<'a, S: ByteSource + ?Sized> FileHandle<'a, S> {
         Ok(Self {
             source,
             object_len: source.len(),
-            prefix,
+            prefix: prefix.into(),
             window_offset: 0,
-            window: Vec::new(),
+            window: Arc::from([]),
             limits,
             requests: 1,
             bytes_read: prefix_len as u64,
         })
+    }
+
+    pub(crate) fn from_cache(
+        source: &'a S,
+        limits: PipelineLimits,
+        cache: &FileCache,
+        requests: u32,
+        bytes_read: u64,
+    ) -> Result<Self> {
+        if source.len() != cache.object_len {
+            return Err(Error::Source("source length changed after indexing".into()));
+        }
+        Ok(Self {
+            source,
+            object_len: cache.object_len,
+            prefix: Arc::clone(&cache.prefix),
+            window_offset: cache.window_offset,
+            window: Arc::clone(&cache.window),
+            limits,
+            requests,
+            bytes_read,
+        })
+    }
+
+    pub(crate) fn cache(&self) -> FileCache {
+        FileCache {
+            object_len: self.object_len,
+            prefix: Arc::clone(&self.prefix),
+            window_offset: self.window_offset,
+            window: Arc::clone(&self.window),
+        }
     }
 
     pub(crate) fn len(&self) -> u64 {
@@ -188,7 +228,7 @@ impl<'a, S: ByteSource + ?Sized> FileHandle<'a, S> {
         }
         data.extend_from_slice(&tail[..requested_source_length]);
         self.window_offset = source_offset;
-        self.window = tail;
+        self.window = tail.into();
         self.requests = self.requests.saturating_add(1);
         self.bytes_read = prospective;
         Ok(data)

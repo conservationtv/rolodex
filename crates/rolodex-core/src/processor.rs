@@ -13,7 +13,7 @@ use crate::{
         SampleLocation, TrackKind, build_canonical_init, fourcc_string, parse_archive_moov,
         parse_indexed_fragment,
     },
-    reader::{FileHandle, PipelineLimits},
+    reader::{FileCache, FileHandle, PipelineLimits},
     scale::{scale_yuv420, scale_yuv420_to_dimensions},
     sprite::{SpriteBuilder, SpriteLayout},
 };
@@ -27,12 +27,51 @@ pub struct SourceIdentity {
     pub etag: String,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct ProcessorOptions {
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThumbnailOptions {
+    #[serde(
+        default,
+        with = "crate::decimal_string::optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub interval_ns: Option<u64>,
     pub max_width: u32,
     pub max_height: u32,
-    pub jpeg_quality: u8,
-    pub thumbnail_interval_ns: Option<u64>,
+    pub quality: u8,
+}
+
+impl Default for ThumbnailOptions {
+    fn default() -> Self {
+        Self {
+            interval_ns: None,
+            max_width: 480,
+            max_height: 270,
+            quality: 78,
+        }
+    }
+}
+
+impl ThumbnailOptions {
+    pub fn validate(self) -> Result<Self> {
+        if self.interval_ns == Some(0) {
+            return Err(Error::Invalid("thumbnail interval must be positive"));
+        }
+        if self.max_width < 2 || self.max_height < 2 {
+            return Err(Error::Invalid("thumbnail bounds must be at least 2x2"));
+        }
+        if self.max_width > u16::MAX as u32 || self.max_height > u16::MAX as u32 {
+            return Err(Error::Limit("thumbnail dimensions exceed JPEG limits"));
+        }
+        if !(1..=100).contains(&self.quality) {
+            return Err(Error::Invalid("JPEG quality must be in 1..=100"));
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessorOptions {
+    pub thumbnail: Option<ThumbnailOptions>,
     pub max_thumbnail_frames: u32,
     pub max_sprite_pixels: u64,
     pub fragment_read_ahead_bytes: usize,
@@ -47,10 +86,7 @@ impl Default for ProcessorOptions {
             ..PipelineLimits::default()
         };
         Self {
-            max_width: 480,
-            max_height: 270,
-            jpeg_quality: 78,
-            thumbnail_interval_ns: None,
+            thumbnail: Some(ThumbnailOptions::default()),
             max_thumbnail_frames: 1_000,
             max_sprite_pixels: 20_000_000,
             fragment_read_ahead_bytes: 16 * 1024,
@@ -62,14 +98,8 @@ impl Default for ProcessorOptions {
 
 impl ProcessorOptions {
     pub fn validate(self) -> Result<Self> {
-        if self.max_width < 2 || self.max_height < 2 {
-            return Err(Error::Invalid("thumbnail bounds must be at least 2x2"));
-        }
-        if self.max_width > u16::MAX as u32 || self.max_height > u16::MAX as u32 {
-            return Err(Error::Limit("thumbnail dimensions exceed JPEG limits"));
-        }
-        if !(1..=100).contains(&self.jpeg_quality) {
-            return Err(Error::Invalid("JPEG quality must be in 1..=100"));
+        if let Some(thumbnail) = self.thumbnail {
+            thumbnail.validate()?;
         }
         self.limits.validate()?;
         if self.fragment_read_ahead_bytes < 16 {
@@ -79,9 +109,6 @@ impl ProcessorOptions {
         }
         if self.max_samples_indexed == 0 {
             return Err(Error::Invalid("maximum indexed sample count is zero"));
-        }
-        if self.thumbnail_interval_ns == Some(0) {
-            return Err(Error::Invalid("thumbnail interval must be positive"));
         }
         if self.max_thumbnail_frames == 0 || self.max_sprite_pixels < 4 {
             return Err(Error::Invalid(
@@ -180,6 +207,25 @@ pub struct ThumbnailMetadata {
     pub sprite_width: u32,
     pub sprite_height: u32,
     pub frames: Vec<ThumbnailFrameMetadata>,
+}
+
+impl ThumbnailMetadata {
+    /// Metadata for a thumbnail that was not generated, either because
+    /// generation was disabled (`error: None`) or because it failed.
+    pub fn unavailable(interval_ns: Option<u64>, error: Option<String>) -> Self {
+        Self {
+            interval_ns,
+            error,
+            frame_count: 0,
+            columns: 0,
+            rows: 0,
+            frame_width: 0,
+            frame_height: 0,
+            sprite_width: 0,
+            sprite_height: 0,
+            frames: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -323,6 +369,21 @@ pub struct ProcessorOutput {
     pub metrics: ProcessorMetrics,
 }
 
+/// Metadata and decoder state produced without reading video sample payloads.
+///
+/// The public fields are the durable index artifacts. Private fields retain the
+/// parsed information needed for a later thumbnail pass over the same source.
+pub struct RecordingIndex {
+    pub metadata: RecordingMetadata,
+    pub init_mp4: Vec<u8>,
+    pub metrics: ProcessorMetrics,
+    movie: ArchiveMovie,
+    video_samples: Vec<TimedVideoSample>,
+    video_timing: VideoTiming,
+    options: ProcessorOptions,
+    cache: FileCache,
+}
+
 struct PendingFragment {
     header: BoxHeader,
     fragment: IndexedFragment,
@@ -358,6 +419,61 @@ async fn process_recording_with_decoder<S, D>(
 where
     S: ByteSource + ?Sized,
     D: VideoDecoder,
+{
+    let thumbnail_options = options.thumbnail;
+    let mut index = index_recording_inner(source, identity, options).await?;
+    let mut metrics = index.metrics.clone();
+    let (thumbnail_jpeg, thumbnail_metadata) = if let Some(thumbnail_options) = thumbnail_options {
+        match render_thumbnail_sprite_with_decoder::<S, D>(
+            source,
+            &index,
+            thumbnail_options,
+            None,
+            &mut metrics,
+        )
+        .await
+        {
+            Ok((jpeg, metadata)) => (Some(jpeg), metadata),
+            Err(error) => {
+                metrics.thumbnail_failures = 1;
+                (
+                    None,
+                    ThumbnailMetadata::unavailable(
+                        thumbnail_options.interval_ns,
+                        Some(error.to_string()),
+                    ),
+                )
+            }
+        }
+    } else {
+        (None, ThumbnailMetadata::unavailable(None, None))
+    };
+    metrics.thumbnail_bytes = thumbnail_jpeg.as_ref().map_or(0, |jpeg| jpeg.len() as u64);
+    index.metrics = metrics;
+    index.metadata.thumbnail = thumbnail_metadata;
+    Ok(ProcessorOutput {
+        thumbnail_jpeg,
+        metadata: index.metadata,
+        init_mp4: index.init_mp4,
+        metrics: index.metrics,
+    })
+}
+
+pub async fn index_recording<S: ByteSource + ?Sized>(
+    source: &S,
+    identity: SourceIdentity,
+    options: ProcessorOptions,
+) -> Result<RecordingIndex> {
+    index_recording_inner(source, identity, options).await
+}
+
+async fn index_recording_inner<S>(
+    source: &S,
+    identity: SourceIdentity,
+    options: ProcessorOptions,
+) -> Result<RecordingIndex>
+where
+    S: ByteSource + ?Sized,
 {
     let options = options.validate()?;
     if source.is_empty() {
@@ -494,25 +610,9 @@ where
     active_track_ids.dedup();
     let init_mp4 = build_canonical_init(&moov_bytes, &active_track_ids)?;
     let video_timing = video_timing(&video_samples)?;
-    let (thumbnail_jpeg, thumbnail_metadata) = match build_thumbnail_sprite::<S, D>(
-        &mut reader,
-        &movie,
-        &video_samples,
-        video_timing,
-        &mut metrics,
-        options,
-    )
-    .await
-    {
-        Ok((jpeg, metadata)) => (Some(jpeg), metadata),
-        Err(error) => {
-            metrics.thumbnail_failures = 1;
-            (None, unavailable_thumbnail_metadata(options, &error))
-        }
-    };
-    metrics.thumbnail_bytes = thumbnail_jpeg.as_ref().map_or(0, |jpeg| jpeg.len() as u64);
     metrics.range_requests = reader.requests();
     metrics.bytes_read = reader.bytes_read();
+    let cache = reader.cache();
 
     let init_hash = hex(&Sha256::digest(&init_mp4));
     let metadata = RecordingMetadata {
@@ -544,14 +644,18 @@ where
             .map(track_metadata)
             .collect(),
         parts,
-        thumbnail: thumbnail_metadata,
+        thumbnail: ThumbnailMetadata::unavailable(None, None),
     };
 
-    Ok(ProcessorOutput {
-        thumbnail_jpeg,
+    Ok(RecordingIndex {
         metadata,
         init_mp4,
         metrics,
+        movie,
+        video_samples,
+        video_timing,
+        options,
+        cache,
     })
 }
 
@@ -757,30 +861,95 @@ fn collect_video_samples(
     Ok(())
 }
 
-async fn build_thumbnail_sprite<S, D>(
-    reader: &mut FileHandle<'_, S>,
-    movie: &ArchiveMovie,
-    samples: &[TimedVideoSample],
-    timing: VideoTiming,
+pub async fn render_thumbnail_sprite<S: ByteSource + ?Sized>(
+    source: &S,
+    index: &RecordingIndex,
+    options: ThumbnailOptions,
+) -> Result<(Vec<u8>, ThumbnailMetadata)> {
+    let mut metrics = index.metrics.clone();
+    render_thumbnail_sprite_with_decoder::<S, SelectedDecoder>(
+        source,
+        index,
+        options,
+        None,
+        &mut metrics,
+    )
+    .await
+}
+
+/// Render a sprite while expressing frame presentation times relative to an
+/// explicit origin. Sample selection still follows the indexed media timeline.
+pub async fn render_thumbnail_sprite_with_presentation_origin<S: ByteSource + ?Sized>(
+    source: &S,
+    index: &RecordingIndex,
+    options: ThumbnailOptions,
+    presentation_origin_ns: i64,
+) -> Result<(Vec<u8>, ThumbnailMetadata)> {
+    let mut metrics = index.metrics.clone();
+    render_thumbnail_sprite_with_decoder::<S, SelectedDecoder>(
+        source,
+        index,
+        options,
+        Some(presentation_origin_ns),
+        &mut metrics,
+    )
+    .await
+}
+
+async fn render_thumbnail_sprite_with_decoder<S, D>(
+    source: &S,
+    index: &RecordingIndex,
+    thumbnail: ThumbnailOptions,
+    metadata_origin_ns: Option<i64>,
     metrics: &mut ProcessorMetrics,
-    options: ProcessorOptions,
 ) -> Result<(Vec<u8>, ThumbnailMetadata)>
 where
     S: ByteSource + ?Sized,
     D: VideoDecoder,
 {
+    let thumbnail = thumbnail.validate()?;
+    let mut reader = FileHandle::from_cache(
+        source,
+        index.options.limits,
+        &index.cache,
+        metrics.range_requests,
+        metrics.bytes_read,
+    )?;
+    let result =
+        build_thumbnail_sprite::<S, D>(&mut reader, index, metrics, thumbnail, metadata_origin_ns)
+            .await;
+    metrics.range_requests = reader.requests();
+    metrics.bytes_read = reader.bytes_read();
+    result
+}
+
+async fn build_thumbnail_sprite<S, D>(
+    reader: &mut FileHandle<'_, S>,
+    index: &RecordingIndex,
+    metrics: &mut ProcessorMetrics,
+    thumbnail: ThumbnailOptions,
+    metadata_origin_ns: Option<i64>,
+) -> Result<(Vec<u8>, ThumbnailMetadata)>
+where
+    S: ByteSource + ?Sized,
+    D: VideoDecoder,
+{
+    let movie = &index.movie;
+    let samples = &index.video_samples;
+    let timing = index.video_timing;
+    let options = index.options;
     let video_duration_ns = timing.duration_ns;
     let presentation_origin = timing.presentation_origin_ns;
-    let frame_count_u64 = options
-        .thumbnail_interval_ns
+    let frame_count_u64 = thumbnail
+        .interval_ns
         .map_or(1, |interval| (video_duration_ns / interval).max(1));
     if frame_count_u64 > u64::from(options.max_thumbnail_frames) {
         return Err(Error::Limit("thumbnail frame count exceeds job limit"));
     }
     let frame_count = u32::try_from(frame_count_u64)
         .map_err(|_| Error::Limit("thumbnail frame count exceeds u32"))?;
-    let interval_ns = options.thumbnail_interval_ns.unwrap_or(video_duration_ns);
-    metrics.thumbnail_interval_ns = options.thumbnail_interval_ns.unwrap_or(0);
+    let interval_ns = thumbnail.interval_ns.unwrap_or(video_duration_ns);
+    metrics.thumbnail_interval_ns = thumbnail.interval_ns.unwrap_or(0);
 
     let mut presentation_order = (0..samples.len()).collect::<Vec<_>>();
     presentation_order.sort_by_key(|&index| (samples[index].presentation_start_ns, index));
@@ -822,7 +991,7 @@ where
     metrics.source_width = frame.width;
     metrics.source_height = frame.height;
     metrics.source_bit_depth = frame.bit_depth;
-    let (scaled, layout) = scale_first_sprite_frame(&frame, frame_count, options)?;
+    let (scaled, layout) = scale_first_sprite_frame(&frame, frame_count, options, thumbnail)?;
     metrics.thumbnail_width = layout.width;
     metrics.thumbnail_height = layout.height;
     metrics.thumbnail_cell_width = layout.cell_width;
@@ -836,7 +1005,10 @@ where
     frame_metadata.push(ThumbnailFrameMetadata {
         index,
         target_ns: elapsed,
-        presentation_time_ns: selected.presentation_start_ns,
+        presentation_time_ns: rebase_presentation_time(
+            selected.presentation_start_ns,
+            metadata_origin_ns,
+        )?,
         sample_offset: selected.location.offset,
         sample_length: selected.location.size,
     });
@@ -861,18 +1033,21 @@ where
         frame_metadata.push(ThumbnailFrameMetadata {
             index,
             target_ns: elapsed,
-            presentation_time_ns: selected.presentation_start_ns,
+            presentation_time_ns: rebase_presentation_time(
+                selected.presentation_start_ns,
+                metadata_origin_ns,
+            )?,
             sample_offset: selected.location.offset,
             sample_length: selected.location.size,
         });
     }
 
     let sheet = builder.finish()?;
-    let jpeg = encode_jpeg(&sheet, options.jpeg_quality)?;
+    let jpeg = encode_jpeg(&sheet, thumbnail.quality)?;
     Ok((
         jpeg,
         ThumbnailMetadata {
-            interval_ns: options.thumbnail_interval_ns,
+            interval_ns: thumbnail.interval_ns,
             error: None,
             frame_count,
             columns: layout.columns,
@@ -884,6 +1059,14 @@ where
             frames: frame_metadata,
         },
     ))
+}
+
+fn rebase_presentation_time(value: i64, origin: Option<i64>) -> Result<i64> {
+    origin.map_or(Ok(value), |origin| {
+        value
+            .checked_sub(origin)
+            .ok_or(Error::Invalid("thumbnail presentation time underflow"))
+    })
 }
 
 fn video_timing(samples: &[TimedVideoSample]) -> Result<VideoTiming> {
@@ -919,28 +1102,14 @@ fn video_timing(samples: &[TimedVideoSample]) -> Result<VideoTiming> {
     })
 }
 
-fn unavailable_thumbnail_metadata(options: ProcessorOptions, error: &Error) -> ThumbnailMetadata {
-    ThumbnailMetadata {
-        interval_ns: options.thumbnail_interval_ns,
-        error: Some(error.to_string()),
-        frame_count: 0,
-        columns: 0,
-        rows: 0,
-        frame_width: 0,
-        frame_height: 0,
-        sprite_width: 0,
-        sprite_height: 0,
-        frames: Vec::new(),
-    }
-}
-
 fn scale_first_sprite_frame(
     frame: &crate::frame::DecodedFrame,
     frame_count: u32,
     options: ProcessorOptions,
+    thumbnail: ThumbnailOptions,
 ) -> Result<(crate::scale::ScaledYuv420, SpriteLayout)> {
-    let mut max_width = options.max_width;
-    let mut max_height = options.max_height;
+    let mut max_width = thumbnail.max_width;
+    let mut max_height = thumbnail.max_height;
     for _ in 0..8 {
         let scaled = scale_yuv420(frame, max_width, max_height)?;
         if let Ok(layout) = SpriteLayout::new(
@@ -1096,7 +1265,7 @@ fn track_metadata(track: &ArchiveTrack) -> TrackMetadata {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -1260,6 +1429,27 @@ mod tests {
     }
 
     #[test]
+    fn thumbnail_generation_can_be_disabled_for_metadata_only_indexing() {
+        let source = synthetic_source();
+        let output =
+            futures::executor::block_on(process_recording_with_decoder::<_, FailingDecoder>(
+                &source,
+                synthetic_identity(),
+                ProcessorOptions {
+                    thumbnail: None,
+                    ..ProcessorOptions::default()
+                },
+            ))
+            .unwrap();
+
+        assert!(output.thumbnail_jpeg.is_none());
+        assert_eq!(output.metadata.thumbnail.error, None);
+        assert_eq!(output.metrics.thumbnail_samples_decoded, 0);
+        assert_eq!(output.metrics.thumbnail_failures, 0);
+        assert!(!output.metadata.parts.is_empty());
+    }
+
+    #[test]
     fn processes_mediamtx_recording_into_three_artifacts() {
         #[cfg(feature = "codec-h264")]
         let relative = "../../fixtures/h264/mediamtx-v1.18.2-640x360.mp4";
@@ -1340,7 +1530,10 @@ mod tests {
         let bytes = std::fs::read(format!("{}/{}", env!("CARGO_MANIFEST_DIR"), relative)).unwrap();
         let source = MemorySource::new(bytes);
         let options = ProcessorOptions {
-            thumbnail_interval_ns: Some(parse_duration_ns("200ms").unwrap()),
+            thumbnail: Some(ThumbnailOptions {
+                interval_ns: Some(parse_duration_ns("200ms").unwrap()),
+                ..ThumbnailOptions::default()
+            }),
             max_sprite_pixels: 400_000,
             ..ProcessorOptions::default()
         };
@@ -1377,6 +1570,35 @@ mod tests {
     }
 
     #[test]
+    fn indexing_and_thumbnail_rendering_are_composable() {
+        #[cfg(feature = "codec-h264")]
+        let relative = "../../fixtures/h264/mediamtx-v1.18.2-640x360.mp4";
+        #[cfg(feature = "codec-h265")]
+        let relative = "../../fixtures/h265/mediamtx-v1.18.2-640x360.mp4";
+        let bytes = std::fs::read(format!("{}/{}", env!("CARGO_MANIFEST_DIR"), relative)).unwrap();
+        let index = futures::executor::block_on(index_recording(
+            bytes.as_slice(),
+            synthetic_identity(),
+            ProcessorOptions {
+                thumbnail: None,
+                ..ProcessorOptions::default()
+            },
+        ))
+        .unwrap();
+        assert_eq!(index.metadata.thumbnail.frame_count, 0);
+        assert_eq!(index.metrics.thumbnail_samples_decoded, 0);
+
+        let (jpeg, metadata) = futures::executor::block_on(render_thumbnail_sprite(
+            bytes.as_slice(),
+            &index,
+            ThumbnailOptions::default(),
+        ))
+        .unwrap();
+        assert_eq!(&jpeg[..2], &[0xff, 0xd8]);
+        assert_eq!(metadata.frame_count, 1);
+    }
+
+    #[test]
     fn creates_one_frame_when_interval_exceeds_video_duration() {
         #[cfg(feature = "codec-h264")]
         let relative = "../../fixtures/h264/mediamtx-v1.18.2-640x360.mp4";
@@ -1389,7 +1611,10 @@ mod tests {
             &source,
             synthetic_identity(),
             ProcessorOptions {
-                thumbnail_interval_ns: Some(interval),
+                thumbnail: Some(ThumbnailOptions {
+                    interval_ns: Some(interval),
+                    ..ThumbnailOptions::default()
+                }),
                 ..ProcessorOptions::default()
             },
         ))

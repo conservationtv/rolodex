@@ -141,14 +141,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rolodex-fuzz"
-version = "0.0.0"
-dependencies = [
- "libfuzzer-sys",
- "rolodex-core",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -171,6 +163,26 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "rolodex-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "jpeg-encoder",
+ "rusty_h264-decoder",
+ "serde",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
+name = "rolodex-fuzz"
+version = "0.0.0"
+dependencies = [
+ "libfuzzer-sys",
+ "rolodex-core",
+]
 
 [[package]]
 name = "rusty_h264-common"
@@ -276,18 +288,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "rolodex-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "jpeg-encoder",
- "rusty_h264-decoder",
- "serde",
- "sha2",
- "thiserror",
 ]
 
 [[package]]

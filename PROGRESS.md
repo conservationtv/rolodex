@@ -23,6 +23,10 @@ Overall status: **in progress**
 | Virtual-HLS metadata | Implemented locally | `mtxi`, tracks, exact `moof+mdat` ranges, decode/presentation timelines, sync flags, source identity, and init hash are serialized. |
 | Canonical HLS init | Implemented locally | Deterministic `iso6` `ftyp`, zero `mvhd`/`tkhd` durations, stripped recording `udta/mtxi`, SHA-256 key; AVC/HEVC outputs pass FFprobe. |
 | Three-artifact R2 commit | Deployed and verified in staging | Worker writes init, sprite thumbnail, then index commit marker and verifies all artifacts for ETag idempotency. Live AVC/HEVC jobs created and reused content-addressed init objects. |
+| Pull-based clip discovery and processing | Implemented locally | M1/M2 select exact complete parts, normalize multi-file fMP4 timelines for standalone playback, and emit HLS, provenance, and contact-sheet artifacts. |
+| Clip CLI local publication | Implemented and fixture-tested | M3 scans MediaMTX directories, revalidates file stamps, writes the artifact set manifest-last, and reports structured metrics. |
+| Clip R2 publication | Implemented; staging playback pending | M4 SigV4 HEAD/PUT, immutable caching, deterministic keys, skip-on-existing idempotency, and manifest-last ordering pass mock HTTP tests. |
+| Clip hardening | Implemented locally | The descriptor carries its media cap across phases, paths are rejected before filesystem access, indexing/rendering are split, native file sources are shared, and fragment timing rewrite fuzzing covers the mutation surface. |
 
 ## Decisions
 
@@ -45,7 +49,7 @@ compatibility with the thumbnail-only CLI/key contract was intentionally
 dropped. Sprites retain per-recording roots under `artifacts/`, indexes use
 per-stream timestamp-sortable `indexes/` prefixes, and init MP4s are
 content-addressed under `init/`. The index object is written last as the commit
-marker. See `docs/VIRTUAL_HLS_STRATEGY.md`.
+marker.
 
 ### 2026-08-10 — per-stream sortable index keys
 
@@ -139,7 +143,7 @@ no pre-existing account resources were reused or modified.
 | 2026-08-09 | Final SIMD Worker packages | H.264 679,063 bytes; H.265 561,082 bytes. |
 | 2026-08-09 | `scripts/verify-fixtures.sh` | All seven synthetic/profile and MediaMTX-layout fixtures pass; SSIM 0.916–0.933. |
 | 2026-08-09 | Sparse 100 MiB logical-object integration test | Stops after one 256 KiB read and one decoded sample. |
-| 2026-08-09 | Native 4K AVC/HEVC/Main10 spikes | One sample each; ~0.06–0.07 s user CPU; 39.7–64.9 MiB peak RSS. See `docs/LOCAL_RESULTS.md`. |
+| 2026-08-09 | Native 4K AVC/HEVC/Main10 spikes | One sample each; ~0.06–0.07 s user CPU; 39.7–64.9 MiB peak RSS. |
 | 2026-08-09 | `cargo +nightly fuzz run ... -runs=10000 -max_len=4096` | Box, codec-config, fragment, and NAL-conversion targets each complete 10,000 sanitizer-backed runs without a crash. |
 | 2026-08-09 | MediaMTX v1.18.2 recorder smoke test | Synthetic RTSP AVC and HEVC recordings decode from the first sample; representative outputs are checked into the fixture corpus. |
 | 2026-08-09 | `cargo audit` on root and fuzz lockfiles | No known RustSec advisories. |
@@ -154,6 +158,10 @@ no pre-existing account resources were reused or modified.
 | 2026-08-10 | Wrangler staging dry-runs | AVC uploads at 786.27 KiB (291.09 KiB gzip); HEVC at 671.19 KiB (252.95 KiB gzip); interval/sprite bindings are present. No deployment performed. |
 | 2026-08-10 | Live schema-v2 sprite deployment | Versions `74479e69…` / `9ab0cc2b…` deployed. Four R2-triggered jobs per codec produced valid 5-cell AVC and 9-cell HEVC sprites plus index/init artifacts. |
 | 2026-08-10 | Live sprite timing | First AVC/HEVC jobs: 423/644 ms CPU and 3,144/5,197 ms wall. Warm medians: 160/255 ms CPU and 2,243/2,429 ms wall. Wrangler tail exposes no peak-memory measurement. |
+| 2026-08-21 | Clip review implementation matrices | H.264: 81 tests; H.265: 82 tests. Strict Clippy, both rolodex-clip and Worker WASM builds, formatting, all five fuzz binaries, and end-to-end FFmpeg/SSIM fixture checks pass. |
+| 2026-08-21 | Standalone repeated-source clip oracle | AVC 2.000011 s / SSIM 0.916665; HEVC 3.600011 s / SSIM 0.916361. FFprobe and full FFmpeg framehash decode pass outside HLS. |
+| 2026-08-21 | Descriptor fuzz smoke (superseded) | 10,000 sanitizer-backed runs at 4 KiB maximum input completed; the serde-only target was subsequently replaced by `fragment_rewrite`. |
+| 2026-08-21 | Root and fuzz dependency audits after clip CLI additions | No known RustSec advisories or warnings. |
 
 ## External inputs needed for full validation
 

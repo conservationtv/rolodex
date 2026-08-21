@@ -198,6 +198,70 @@ pub fn parse_indexed_fragment(
     })
 }
 
+/// Rewrite fixed-width fragment timeline fields without moving sample data.
+pub fn rewrite_fragment_timing(
+    data: &mut [u8],
+    sequence_number: u32,
+    track_base_decode_times: &[(u32, u64)],
+) -> Result<()> {
+    let moof = box_at(data, 0, data.len())?;
+    if moof.kind != *b"moof" {
+        return Err(Error::Invalid("fragment does not start with moof"));
+    }
+    let mfhd = child(data, moof, b"mfhd")?.ok_or(Error::Invalid("moof missing mfhd"))?;
+    let mfhd_payload = mfhd.payload(data)?;
+    if mfhd_payload.len() < 8 || mfhd_payload[0] != 0 {
+        return Err(Error::Invalid("invalid mfhd"));
+    }
+    let sequence_offset = mfhd.payload_start() + 4;
+    data[sequence_offset..sequence_offset + 4].copy_from_slice(&sequence_number.to_be_bytes());
+
+    let mut rewritten = Vec::new();
+    let mut edits = Vec::new();
+    for traf in children(data, moof)? {
+        let traf = traf?;
+        if traf.kind != *b"traf" {
+            continue;
+        }
+        let tfhd = child(data, traf, b"tfhd")?.ok_or(Error::Invalid("traf missing tfhd"))?;
+        let track_id = read_u32(tfhd.payload(data)?, 4)?;
+        if rewritten.contains(&track_id) {
+            return Err(Error::Unsupported("multiple traf boxes for one track"));
+        }
+        let base_decode_time = track_base_decode_times
+            .iter()
+            .find(|(candidate, _)| *candidate == track_id)
+            .map(|(_, value)| *value)
+            .ok_or(Error::Invalid("missing normalized track decode time"))?;
+        let tfdt = child(data, traf, b"tfdt")?.ok_or(Error::Invalid("traf missing tfdt"))?;
+        let payload_start = tfdt.payload_start();
+        let version = *data
+            .get(payload_start)
+            .ok_or(Error::Invalid("empty tfdt"))?;
+        match version {
+            0 => {
+                let value = u32::try_from(base_decode_time)
+                    .map_err(|_| Error::Limit("normalized tfdt exceeds version 0"))?;
+                edits.push((payload_start + 4, value.to_be_bytes().to_vec()));
+            }
+            1 => {
+                edits.push((payload_start + 4, base_decode_time.to_be_bytes().to_vec()));
+            }
+            _ => return Err(Error::Unsupported("unknown tfdt version")),
+        }
+        rewritten.push(track_id);
+    }
+    if rewritten.len() != track_base_decode_times.len() {
+        return Err(Error::Invalid(
+            "normalized decode times contain absent tracks",
+        ));
+    }
+    for (offset, value) in edits {
+        data[offset..offset + value.len()].copy_from_slice(&value);
+    }
+    Ok(())
+}
+
 fn parse_tfdt(payload: &[u8]) -> Result<u64> {
     let version = *payload.first().ok_or(Error::Invalid("empty tfdt"))?;
     match version {
@@ -373,5 +437,40 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, Error::Limit(_)));
         assert!(samples.is_empty());
+    }
+
+    #[test]
+    fn rewrites_sequence_and_decode_time_without_changing_fragment_size() {
+        let path = format!(
+            "{}/../../fixtures/h264/mediamtx-v1.18.2-640x360.mp4",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let bytes = std::fs::read(path).unwrap();
+        let moof_start = bytes
+            .windows(4)
+            .position(|window| window == b"moof")
+            .unwrap()
+            - 4;
+        let moof = box_at(&bytes, moof_start, bytes.len()).unwrap();
+        let mut fragment = bytes[moof.start..moof.end()].to_vec();
+        let original_len = fragment.len();
+
+        rewrite_fragment_timing(&mut fragment, 42, &[(1, 123_456)]).unwrap();
+        let parsed = parse_indexed_fragment(
+            &fragment,
+            0,
+            &[(
+                1,
+                SampleDefaults {
+                    duration: 0,
+                    size: 0,
+                    flags: 0,
+                },
+            )],
+        )
+        .unwrap();
+        assert_eq!(fragment.len(), original_len);
+        assert_eq!(parsed.sequence_number, 42);
+        assert_eq!(parsed.tracks[0].base_decode_time, 123_456);
     }
 }

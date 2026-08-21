@@ -40,3 +40,10 @@ path = "fuzz_targets/nal_conversion.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fragment_rewrite"
+path = "fuzz_targets/fragment_rewrite.rs"
+test = false
+doc = false
+bench = false

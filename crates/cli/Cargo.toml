@@ -1,6 +1,6 @@
 [package]
 name = "rolodex"
-description = "Local MediaMTX thumbnail, archive-index, and init processor"
+description = "Local MediaMTX index processor and clip publisher"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -8,11 +8,18 @@ version.workspace = true
 
 [features]
 default = []
-codec-h264 = ["rolodex-core/codec-h264"]
-codec-h265 = ["rolodex-core/codec-h265"]
+codec-h264 = ["rolodex-clip/codec-h264", "rolodex-core/codec-h264"]
+codec-h265 = ["rolodex-clip/codec-h265", "rolodex-core/codec-h265"]
 
 [dependencies]
 async-trait.workspace = true
+chrono.workspace = true
+rolodex-clip = { path = "../rolodex-clip", default-features = false }
 futures = "0.3.31"
+hmac.workspace = true
+rolodex-core = { path = "../rolodex-core", default-features = false, features = ["std-fs"] }
+serde.workspace = true
 serde_json.workspace = true
-rolodex-core = { path = "../rolodex-core", default-features = false }
+sha2.workspace = true
+ureq.workspace = true
+url.workspace = true

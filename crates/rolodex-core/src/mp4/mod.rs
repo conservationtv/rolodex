@@ -10,6 +10,6 @@ pub use archive::{
 pub use boxes::{BoxHeader, read_top_level_header};
 pub use fragment::{
     IndexedFragment, IndexedSample, IndexedTrackFragment, SampleDefaults, SampleLocation,
-    parse_indexed_fragment,
+    parse_indexed_fragment, rewrite_fragment_timing,
 };
 pub use init::{VideoTrack, parse_moov};

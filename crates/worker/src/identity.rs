@@ -42,15 +42,16 @@ impl ArtifactIdentity {
         thumbnail_key: Option<String>,
         options: ProcessorOptions,
     ) -> Self {
+        let thumbnail = options.thumbnail.expect("worker thumbnail options");
         Self {
             source_etag,
             source_version,
             init_sha256,
             init_key,
             thumbnail_key,
-            max_width: options.max_width,
-            max_height: options.max_height,
-            jpeg_quality: options.jpeg_quality,
+            max_width: thumbnail.max_width,
+            max_height: thumbnail.max_height,
+            jpeg_quality: thumbnail.quality,
             thumbnail_interval: interval_identity(options),
             max_sprite_pixels: options.max_sprite_pixels,
         }
@@ -61,6 +62,9 @@ impl ArtifactIdentity {
         options: ProcessorOptions,
         metadata: &HashMap<String, String>,
     ) -> bool {
+        let Some(thumbnail) = options.thumbnail else {
+            return false;
+        };
         metadata
             .get(SOURCE_ETAG)
             .is_some_and(|value| value == source_etag)
@@ -69,9 +73,9 @@ impl ArtifactIdentity {
                 .is_some_and(|value| value == PROCESSOR_VERSION)
             && metadata.contains_key(INIT_KEY)
             && valid_thumbnail_identity(metadata)
-            && metadata.get(MAX_WIDTH) == Some(&options.max_width.to_string())
-            && metadata.get(MAX_HEIGHT) == Some(&options.max_height.to_string())
-            && metadata.get(JPEG_QUALITY) == Some(&options.jpeg_quality.to_string())
+            && metadata.get(MAX_WIDTH) == Some(&thumbnail.max_width.to_string())
+            && metadata.get(MAX_HEIGHT) == Some(&thumbnail.max_height.to_string())
+            && metadata.get(JPEG_QUALITY) == Some(&thumbnail.quality.to_string())
             && metadata.get(THUMBNAIL_INTERVAL) == Some(&interval_identity(options))
             && metadata.get(MAX_SPRITE_PIXELS) == Some(&options.max_sprite_pixels.to_string())
     }
@@ -120,7 +124,8 @@ fn valid_thumbnail_identity(metadata: &HashMap<String, String>) -> bool {
 
 fn interval_identity(options: ProcessorOptions) -> String {
     options
-        .thumbnail_interval_ns
+        .thumbnail
+        .and_then(|value| value.interval_ns)
         .map_or_else(|| "single".into(), |value| value.to_string())
 }
 
@@ -196,14 +201,17 @@ mod tests {
         ));
         let metadata = identity().metadata();
         let mut options = ProcessorOptions::default();
-        options.max_width += 2;
+        options.thumbnail.as_mut().unwrap().max_width += 2;
         assert!(!ArtifactIdentity::source_matches(
             "source-etag",
             options,
             &metadata
         ));
         let options = ProcessorOptions {
-            thumbnail_interval_ns: Some(10_000_000_000),
+            thumbnail: Some(rolodex_core::ThumbnailOptions {
+                interval_ns: Some(20_000_000_000),
+                ..rolodex_core::ThumbnailOptions::default()
+            }),
             ..ProcessorOptions::default()
         };
         assert!(!ArtifactIdentity::source_matches(

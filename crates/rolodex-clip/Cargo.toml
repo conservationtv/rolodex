@@ -1,0 +1,28 @@
+[package]
+name = "rolodex-clip"
+description = "Pull-based fMP4 clip discovery and publication core"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+default = []
+codec-h264 = ["rolodex-core/codec-h264"]
+codec-h265 = ["rolodex-core/codec-h265"]
+test-util = []
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+rolodex-core = { path = "../rolodex-core", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+futures = "0.3.31"
+
+[[example]]
+name = "process_fixture"
+required-features = ["test-util"]

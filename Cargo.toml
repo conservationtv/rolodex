@@ -1,10 +1,11 @@
 [workspace]
 members = [
     "crates/rolodex-core",
+    "crates/rolodex-clip",
     "crates/cli",
     "crates/worker",
 ]
-default-members = ["crates/rolodex-core", "crates/cli"]
+default-members = ["crates/rolodex-core", "crates/rolodex-clip", "crates/cli"]
 resolver = "2"
 
 [workspace.package]
@@ -15,6 +16,8 @@ version = "0.1.0"
 
 [workspace.dependencies]
 async-trait = "0.1.92"
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+hmac = "0.12.1"
 jpeg-encoder = { version = "0.7.1", default-features = false, features = ["std"] }
 rust_h265 = "0.1.0"
 rusty_h264-decoder = "0.8.0"
@@ -22,6 +25,8 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
 thiserror = "2.0.17"
+ureq = { version = "2.12.1", default-features = false, features = ["tls"] }
+url = "2.5.7"
 
 [profile.release]
 codegen-units = 1

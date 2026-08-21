@@ -7,5 +7,5 @@ fuzz_target!(|data: &[u8]| {
         let _ = rolodex_core::mp4::boxes::children(data, root);
     }
     let _ = rolodex_core::mp4::parse_archive_moov(data);
-    let _ = rolodex_core::mp4::build_canonical_init(data);
+    let _ = rolodex_core::mp4::build_canonical_init(data, &[1]);
 });

@@ -37,16 +37,20 @@ struct Config {
 impl Config {
     fn from_env(env: &Env) -> std::result::Result<Self, String> {
         let mut options = ProcessorOptions::default();
-        options.max_width = optional_number(env, "MAX_WIDTH", options.max_width)?;
-        options.max_height = optional_number(env, "MAX_HEIGHT", options.max_height)?;
-        options.jpeg_quality = optional_number(env, "JPEG_QUALITY", options.jpeg_quality)?;
-        options.thumbnail_interval_ns = optional_string(env, "THUMBNAIL_INTERVAL")
+        let thumbnail = options
+            .thumbnail
+            .as_mut()
+            .expect("default thumbnail options");
+        thumbnail.max_width = optional_number(env, "MAX_WIDTH", thumbnail.max_width)?;
+        thumbnail.max_height = optional_number(env, "MAX_HEIGHT", thumbnail.max_height)?;
+        thumbnail.quality = optional_number(env, "JPEG_QUALITY", thumbnail.quality)?;
+        thumbnail.interval_ns = optional_string(env, "THUMBNAIL_INTERVAL")
             .map(|value| {
-                parse_duration_ns(&value).map_err(|error| {
+                parse_duration_ns(&value).map(Some).map_err(|error| {
                     format!("environment variable THUMBNAIL_INTERVAL is invalid: {error}")
                 })
             })
-            .transpose()?;
+            .unwrap_or(Ok(thumbnail.interval_ns))?;
         options.max_thumbnail_frames =
             optional_number(env, "MAX_THUMBNAIL_FRAMES", options.max_thumbnail_frames)?;
         options.max_sprite_pixels =

@@ -21,8 +21,9 @@ mod sprite;
 pub use codec::{BUILD_CODEC, CodecConfig, VideoCodec};
 pub use error::{Error, Result};
 pub use processor::{
-    ProcessorMetrics, ProcessorOptions, ProcessorOutput, RecordingMetadata, SourceIdentity,
-    parse_duration_ns, process_recording,
+    ProcessorMetrics, ProcessorOptions, ProcessorOutput, RecordingIndex, RecordingMetadata,
+    SourceIdentity, ThumbnailOptions, hex, index_recording, parse_duration_ns, process_recording,
+    render_thumbnail_sprite, render_thumbnail_sprite_with_presentation_origin,
 };
 pub use reader::PipelineLimits;
 pub use source::ByteSource;

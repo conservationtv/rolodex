@@ -19,15 +19,10 @@ R2 recording -> Queue -> Rust Worker -> ETag-conditional ranged fMP4 walk
 
 The index and canonical HLS init allow a later playlist compiler to expose the
 unchanged source MP4 media as `EXT-X-BYTERANGE` segments. Video bytes remain on
-the direct R2-to-browser path. See
-[docs/VIRTUAL_HLS_STRATEGY.md](docs/VIRTUAL_HLS_STRATEGY.md) for the artifact
-contract and rollout strategy.
+the direct R2-to-browser path.
 
-The detailed design and live status are in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md),
-[PROGRESS.md](PROGRESS.md), and [docs/COMPLETION_AUDIT.md](docs/COMPLETION_AUDIT.md).
-Actual Cloudflare measurements are in
-[docs/STAGING_RESULTS.md](docs/STAGING_RESULTS.md); decoder/dependency licences
-and the advisory audit are in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
+The detailed design and live status are in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
+and [PROGRESS.md](PROGRESS.md).
 
 ## What is implemented
 
@@ -66,11 +61,11 @@ and the advisory audit are in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
 ```bash
 cargo run --release -p rolodex \
   --no-default-features --features codec-h264 -- \
-  input.mp4 output-directory
+  index input.mp4 output-directory
 
 cargo run --release -p rolodex \
   --no-default-features --features codec-h265 -- \
-  input.mp4 output-directory
+  index input.mp4 output-directory
 ```
 
 Optional arguments are `--max-width`, `--max-height`, `--quality`, and
@@ -82,12 +77,44 @@ directory always receives `index.json` and `init/<sha256>.mp4`, plus
 `thumbnail.jpg` when thumbnail generation succeeds. MediaMTX `mtxi` metadata is
 extracted when present but is not required.
 
+## Clip publisher
+
+The codec-specific `rolodex clip` subcommand discovers a UTC range across a
+MediaMTX recording directory, normalizes complete fragments into a standalone
+fMP4, creates a byterange HLS playlist and contact sheet, and writes or uploads
+the artifact set.
+
+```bash
+cargo run --release -p rolodex \
+  --no-default-features --features codec-h264 -- \
+  clip --recordings ./recordings --stream camera-12 \
+  --from 2026-08-13T22:19:00Z --to 2026-08-13T22:21:30Z \
+  --out ./clip-output
+```
+
+R2 mode replaces `--out` with the bucket and S3 endpoint. Credentials are read
+only from `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+
+```bash
+AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \
+cargo run --release -p rolodex \
+  --no-default-features --features codec-h264 -- \
+  clip --recordings ./recordings --stream camera-12 \
+  --from 2026-08-13T22:19:00Z --to 2026-08-13T22:21:30Z \
+  --bucket rolodex --endpoint https://ACCOUNT.r2.cloudflarestorage.com \
+  --base-url https://media.example.com
+```
+
+The deterministic `clips/<stream>/<start>_<duration>/` prefix makes retries
+idempotent. Objects are checked with signed HEAD requests, media is uploaded
+first, and `index.m3u8` is written last as the commit marker.
+
 ## Test and verify
 
 ```bash
-cargo test -p rolodex-core -p rolodex -p rolodex-worker \
+cargo test -p rolodex-core -p rolodex-clip -p rolodex -p rolodex-worker \
   --no-default-features --features codec-h264
-cargo test -p rolodex-core -p rolodex -p rolodex-worker \
+cargo test -p rolodex-core -p rolodex-clip -p rolodex -p rolodex-worker \
   --no-default-features --features codec-h265
 
 ./scripts/verify-fixtures.sh
@@ -101,7 +128,7 @@ The checked-in fuzz harnesses require `cargo-fuzz` and a nightly compiler. A
 bounded smoke pass is:
 
 ```bash
-for target in box_parser codec_config fragment nal_conversion; do
+for target in box_parser codec_config fragment nal_conversion clip_descriptor; do
   cargo +nightly fuzz run "$target" -- -runs=10000 -max_len=4096
 done
 ```
@@ -162,8 +189,7 @@ npx wrangler r2 bucket notification create rolodex-recordings \
 ```
 
 Change the resource names and prefixes in `wrangler.jsonc` first if you do not
-want the defaults. Run the notification command only once. More detail is in
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+want the defaults. Run the notification command only once.
 
 ## Supported input assumptions
 

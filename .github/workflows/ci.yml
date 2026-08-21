@@ -19,8 +19,9 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
       - run: bash -n scripts/*.sh
-      - run: cargo test -p rolodex-core -p rolodex -p rolodex-worker --no-default-features --features codec-${{ matrix.codec }}
-      - run: cargo clippy -p rolodex-core -p rolodex --no-default-features --features codec-${{ matrix.codec }} --all-targets -- -D warnings
+      - run: cargo test -p rolodex-core -p rolodex-clip -p rolodex -p rolodex-worker --no-default-features --features codec-${{ matrix.codec }}
+      - run: cargo clippy -p rolodex-core -p rolodex-clip -p rolodex --no-default-features --features codec-${{ matrix.codec }} --all-targets -- -D warnings
+      - run: cargo check -p rolodex-clip --target wasm32-unknown-unknown --no-default-features --features codec-${{ matrix.codec }}
       - run: cargo check -p rolodex-worker --target wasm32-unknown-unknown --no-default-features --features codec-${{ matrix.codec }}
       - if: matrix.codec == 'h264'
         run: cargo check --manifest-path fuzz/Cargo.toml --bins
