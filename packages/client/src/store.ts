@@ -1,7 +1,7 @@
 import Hls, { type ErrorData } from "hls.js";
 
 import { GapClock } from "./gap-clock.js";
-import { ArchiveManifestClient, internalsOf } from "./manifest-client.js";
+import type { ArchiveManifestClient } from "./manifest-client.js";
 import type { ISODateRange, ISODateString } from "./manifest.js";
 import { PlaylistFactory, type PlaylistLease } from "./playlist.js";
 import {
@@ -237,16 +237,7 @@ export class ArchivePlayerStore {
     const requestOptions = options?.signal ? { signal: options.signal } : undefined;
     this.mutate((snapshot) => ({ ...carryBase(snapshot), phase: "loading-manifest" }));
     try {
-      const manifest = await internalsOf(this.manifests).getManifest(requestOptions);
-      let coverage: ISODateRange | undefined;
-      for (const day of Object.values(manifest.days)) {
-        coverage = coverage === undefined
-          ? { startedAt: day.startedAt, endedAt: day.endedAt }
-          : {
-              startedAt: utcNs(day.startedAt) < utcNs(coverage.startedAt) ? day.startedAt : coverage.startedAt,
-              endedAt: utcNs(day.endedAt) > utcNs(coverage.endedAt) ? day.endedAt : coverage.endedAt,
-            };
-      }
+      const { stream, coverage } = await this.manifests.describe(requestOptions);
       const viewport = this.snapshot.viewport;
       const range = options?.range
         ?? (viewport.startedAt && viewport.endedAt
@@ -261,7 +252,7 @@ export class ArchivePlayerStore {
         const next: ReadyArchivePlayerSnapshot = {
           ...carryBase(snapshot),
           phase: "ready",
-          stream: manifest.stream,
+          stream,
           viewport: range
             ? { startedAt: range.startedAt, endedAt: range.endedAt }
             : snapshot.viewport,
@@ -354,15 +345,15 @@ export class ArchivePlayerStore {
     const token = ++this.seekToken;
     const requestOptions = options?.signal ? { signal: options.signal } : undefined;
     try {
-      /* The manifest is required (and cached) so every post-manifest phase
-       * can carry the stream identity. */
-      const manifest = await internalsOf(this.manifests).getManifest(requestOptions);
+      /* The stream identity is required (and cached by the manifest client)
+       * so every post-manifest phase can carry it. */
+      const { stream } = await this.manifests.describe(requestOptions);
       if (token !== this.seekToken) return;
       const location = await this.manifests.locate(to, requestOptions);
       if (token !== this.seekToken) return;
       if (location.span.kind === "gap") {
         const autoplay = options?.autoplay ?? this.playbackIntent;
-        this.enterGap(to, location, manifest.stream, autoplay);
+        this.enterGap(to, location, stream, autoplay);
         return;
       }
 
@@ -384,7 +375,7 @@ export class ArchivePlayerStore {
           ...carryBase(snapshot),
           ...carryLoaded(snapshot),
           phase: element ? (autoplay ? "playing" : "paused") : "ready",
-          stream: manifest.stream,
+          stream,
           playhead: to,
           location,
           playback: {
@@ -402,7 +393,7 @@ export class ArchivePlayerStore {
               ...carryBase(snapshot),
               ...carryLoaded(snapshot),
               phase: "paused",
-              stream: manifest.stream,
+              stream,
               playhead: to,
               location,
               playback: { ...snapshot.playback, playing: false },
@@ -418,7 +409,7 @@ export class ArchivePlayerStore {
         ...carryBase(snapshot),
         ...carryLoaded(snapshot),
         phase: "loading-media",
-        stream: manifest.stream,
+        stream,
         playhead: to,
       }));
       const lease = await this.playlists.create({ at: to });
@@ -435,7 +426,7 @@ export class ArchivePlayerStore {
         ...carryBase(snapshot),
         ...carryLoaded(snapshot),
         phase: "ready",
-        stream: manifest.stream,
+        stream,
         location,
         active: { url: lease.url, startedAt: lease.startedAt, endedAt: lease.endedAt },
       }));

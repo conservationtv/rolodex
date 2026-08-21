@@ -27,16 +27,16 @@ type level.
    - `no-inline-object-type` / `no-conditional-empty-object-spread`: the code
      already complies; do not "simplify" while moving or you may reintroduce
      violations.
-3. **The internals backdoor must not become public.** `manifestClientInternals`
-   (WeakMap), `internalsOf`, and `ArchiveManifestClientInternals` let
-   `PlaylistFactory` and `ArchivePlayerStore` reach the storage instance and the
-   raw stream manifest without widening `ArchiveManifestClient`'s public class.
-   After the split these live in the manifest-client module and are imported by
-   the playlist/store modules, but they must **not** be re-exported from the
-   `index.ts` barrel. `package.json` only exposes the `"."` entry and tsdown
-   bundles from the single `src/index.ts` entry, so non-barrel exports stay
-   internal to the bundle — keep it that way (do not add entries to `exports`
-   or `tsdown.config.ts`).
+3. **No internals backdoor.** (Superseded: the original WeakMap backdoor —
+   `manifestClientInternals` / `internalsOf` — was removed after this refactor.)
+   `PlaylistFactory` and `ArchivePlayerStore` now use public
+   `ArchiveManifestClient` methods instead: `describe()` for the stream
+   identity and coverage, and `getVideo(key)` for media/init object URLs. Do
+   not reintroduce shared mutable module state to bridge the classes.
+   `package.json` only exposes the `"."` entry and tsdown bundles from the
+   single `src/index.ts` entry, so non-barrel exports stay internal to the
+   bundle — keep it that way (do not add entries to `exports` or
+   `tsdown.config.ts`).
 4. **TS config quirks to respect** (`tsconfig.json`): `verbatimModuleSyntax`
    (use `import type { … }` for type-only imports), `erasableSyntaxOnly` (no
    parameter properties/enums), `exactOptionalPropertyTypes`,
@@ -127,13 +127,12 @@ add unit tests later.
 Move:
 
 - Types: `ArchiveManifestClientOptions`, `CachedFetch`,
-  `RecordingsAroundResult`, `ArchiveManifestClientInternals`.
-- Values: `manifestClientInternals` (WeakMap), `internalsOf`.
+  `RecordingsAroundResult`.
 - Class: `ArchiveManifestClient`.
 
-`internalsOf` and `ArchiveManifestClientInternals` are exported from this
-module (so `playlist.ts` and `store.ts` can import them) but are **not**
-re-exported from the barrel.
+(The `internalsOf` WeakMap backdoor that once lived here was later removed;
+`playlist.ts` and `store.ts` use the public `describe()` and `getVideo()`
+methods instead.)
 
 ### `src/playlist.ts` — virtual HLS compilation
 
@@ -174,8 +173,7 @@ export type { /* identical list to today's export type block */ } from "./…";
 
 Use explicit `.js` extensions in relative imports throughout (ESM,
 `moduleResolution: Bundler` tolerates either, but match the existing test-file
-convention of `./index.js`). Do **not** re-export `internalsOf`,
-`manifestClientInternals`, `ArchiveManifestClientInternals`, `CachedFetch`,
+convention of `./index.js`). Do **not** re-export `CachedFetch`,
 `RecordingsAroundResult`, `NormalizedRecording`, `VirtualSegment`,
 `CompiledRecording`, `ResolvedRecording`, `PlaylistPiece`, `SigningCredentials`,
 `carryBase`, `carryLoaded`, `isMediaBound`, or any schema constants — these are

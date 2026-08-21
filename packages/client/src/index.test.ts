@@ -119,10 +119,6 @@ class MemoryArchiveStorage implements ArchiveStorage {
     return { url: `https://media.test/${source}` };
   }
 
-  async getInit(init: string): Promise<Source> {
-    return { url: `https://media.test/${init}` };
-  }
-
   async getThumbnail(thumbnail: string): Promise<Source> {
     this.thumbnailFetches.push(thumbnail);
     const source: Source = { url: `https://media.test/${thumbnail}` };
@@ -148,6 +144,28 @@ function createArchiveSource(auth: ArchiveSource["auth"]): ArchiveSource {
 }
 
 describe("S3ArchiveStorage", () => {
+  it("resolves immutable objects through a public cache domain", async () => {
+    const source = {
+      ...createArchiveSource({
+        type: "credentials" as const,
+        accessKeyId: "AKIA_TEST",
+        secretAccessKey: "test-secret",
+      }),
+      publicBaseUrl: "https://r2.archive.experiments.jameswilliams.fyi/cache/",
+    };
+    const storage = new S3ArchiveStorage(source);
+
+    await expect(storage.getSource("/recordings/cam one/clip #1.mp4")).resolves.toEqual({
+      url: "https://r2.archive.experiments.jameswilliams.fyi/cache/recordings/cam%20one/clip%20%231.mp4",
+    });
+    await expect(storage.getSource("init/abc.mp4")).resolves.toEqual({
+      url: "https://r2.archive.experiments.jameswilliams.fyi/cache/init/abc.mp4",
+    });
+    await expect(storage.getThumbnail("artifacts/cam/thumbnail.jpg")).resolves.toEqual({
+      url: "https://r2.archive.experiments.jameswilliams.fyi/cache/artifacts/cam/thumbnail.jpg",
+    });
+  });
+
   it("presigns media URLs against the private bucket", async () => {
     const startedAt = Date.now();
     const storage = new S3ArchiveStorage(createArchiveSource({

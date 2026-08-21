@@ -20,9 +20,9 @@ player interface you want to build.
 
 ## What you get
 
-- **`S3ArchiveStorage`** — authenticated access to the private bucket.
-  Manifests are read through the S3 API; media, init segments, and
-  thumbnails are exposed to the browser as presigned URLs.
+- **`S3ArchiveStorage`** — authenticated access to archive manifests.
+  Media, init segments, and thumbnails can use stable URLs on a public
+  cache domain, or presigned S3 URLs when the bucket is fully private.
 - **`ArchiveManifestClient`** — manifest discovery and caching, plus
   the queries a UI needs: timelines, point-in-time lookup, and
   thumbnail cues for hover previews.
@@ -63,6 +63,7 @@ const storage = new S3ArchiveStorage({
   manifest: "streams/gate-camera/archive.json",
   region: "auto",
   endpoint: "https://<account>.r2.cloudflarestorage.com",
+  publicBaseUrl: "https://media.example.com", // optional R2 custom domain
   auth: {
     type: "temporary_credentials", // or "credentials"
     accessKeyId: "…",
@@ -88,10 +89,11 @@ const store = new ArchivePlayerStore({
 await store.initialize({ range: latest });
 ```
 
-Credentials are used client-side to presign URLs, so use short-lived
-temporary credentials scoped to read-only access in production. The
-presigned URL lifetime is automatically clamped to the credential
-expiry.
+Credentials are always used client-side to read manifests, so use short-lived
+temporary credentials scoped to read-only access in production. When
+`publicBaseUrl` is set, immutable playback objects use that domain without
+query parameters so Cloudflare can cache them. Otherwise those URLs are
+presigned, with their lifetime automatically clamped to the credential expiry.
 
 ### Vanilla JS
 
@@ -240,6 +242,8 @@ You can skip `ArchivePlayerStore` entirely and build on the primitives:
 - `manifests.locate(utc)` — which recording/gap contains an instant,
   with recording offset and segment index.
 - `manifests.getThumbnail(utc)` — a thumbnail cue for an instant.
+- `manifests.describe()` — the stream identity and whole-archive coverage.
+- `manifests.getVideo(key)` — a fetchable URL for a media or init object.
 - `new PlaylistFactory(manifests).create({ at })` — a `PlaylistLease`
   with a blob playlist `url`, `mediaTimeAt(utc)` / `utcAt(mediaTime)`
   converters, and `revoke()`.

@@ -34,7 +34,7 @@ export type {
   ThumbnailCrop,
   ThumbnailCue,
 } from "./timeline.js";
-export type { ArchiveManifestClientOptions } from "./manifest-client.js";
+export type { ArchiveDescription, ArchiveManifestClientOptions } from "./manifest-client.js";
 export type {
   PlaylistWindow,
   PlaylistWindowRequest,

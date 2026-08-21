@@ -1,6 +1,6 @@
-import { ArchiveManifestClient, internalsOf } from "./manifest-client.js";
+import type { ArchiveManifestClient } from "./manifest-client.js";
 import type { ArchiveRecording, ISODateString } from "./manifest.js";
-import type { ArchiveStorage, Source } from "./storage.js";
+import type { Source } from "./storage.js";
 import {
   firstSegmentAtOrAfter,
   normalizeRecording,
@@ -77,7 +77,6 @@ export interface PlaylistPiece {
 
 export class PlaylistFactory {
   private manifests: ArchiveManifestClient;
-  private storage: ArchiveStorage;
   private defaultBeforeSeconds: number;
   private defaultAfterSeconds: number;
   private targetSegmentSeconds: number;
@@ -89,7 +88,6 @@ export class PlaylistFactory {
     options?: PlaylistFactoryOptions,
   ) {
     this.manifests = manifests;
-    this.storage = internalsOf(manifests).storage;
     this.defaultBeforeSeconds = options?.defaultBeforeSeconds ?? 0;
     this.defaultAfterSeconds = options?.defaultAfterSeconds ?? 90;
     this.targetSegmentSeconds = options?.targetSegmentSeconds ?? 4;
@@ -171,8 +169,8 @@ export class PlaylistFactory {
 
     const resolved: ResolvedRecording[] = await Promise.all(compiled.map(async (item) => {
       const [init, source] = await Promise.all([
-        this.storage.getInit(item.recording.init),
-        this.storage.getSource(item.recording.source),
+        this.manifests.getVideo(item.recording.init),
+        this.manifests.getVideo(item.recording.source),
       ]);
       return { ...item, init, source };
     }));

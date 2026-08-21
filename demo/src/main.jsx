@@ -475,6 +475,7 @@ const emptyFields = {
   manifest: "",
   region: "auto",
   endpoint: "",
+  publicBaseUrl: "https://r2.archive.experiments.jameswilliams.fyi",
   accessKeyId: "",
   secretAccessKey: "",
 };
@@ -493,6 +494,9 @@ function Configuration({ onConnect }) {
       manifest: fields.manifest.trim(),
       region: fields.region.trim(),
       endpoint: fields.endpoint.trim(),
+      ...(fields.publicBaseUrl.trim()
+        ? { publicBaseUrl: fields.publicBaseUrl.trim() }
+        : {}),
       auth: {
         type: "credentials",
         accessKeyId: fields.accessKeyId.trim(),
@@ -527,6 +531,17 @@ function Configuration({ onConnect }) {
               placeholder="https://example.r2.cloudflarestorage.com"
               spellCheck="false"
               required
+            />
+          </label>
+          <label className="wide">
+            Public cache URL (optional)
+            <input
+              name="publicBaseUrl"
+              type="url"
+              value={fields.publicBaseUrl}
+              onChange={update}
+              placeholder="https://media.example.com"
+              spellCheck="false"
             />
           </label>
           <label>

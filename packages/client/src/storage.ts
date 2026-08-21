@@ -35,6 +35,11 @@ export interface ArchiveSource {
   manifest: string;
   region: string;
   endpoint: string;
+  /**
+   * Public base URL for immutable media, init, and thumbnail objects.
+   * When omitted, object URLs are presigned against `endpoint`.
+   */
+  publicBaseUrl?: string;
   auth: ArchiveAuthentication;
 }
 
@@ -53,12 +58,22 @@ export interface ArchiveStorage {
   getDailyManifest(key: string, options?: RequestOptions): Promise<DailyArchiveManifest>;
 
   getSource(source: string, options?: RequestOptions): Promise<Source>;
-  getInit(init: string, options?: RequestOptions): Promise<Source>;
   getThumbnail(thumbnail: string, options?: RequestOptions): Promise<Source>;
 }
 
 export function normalizeKey(key: string): string {
   return key.replace(/^\/+/, "");
+}
+
+export function publicObjectUrl(baseUrl: string, key: string): string {
+  const root = new URL(baseUrl);
+  root.search = "";
+  root.hash = "";
+  root.pathname = `${root.pathname.replace(/\/?$/, "/")}${normalizeKey(key)
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/")}`;
+  return root.href;
 }
 
 export interface SigningCredentials {
@@ -111,12 +126,14 @@ export class S3ArchiveStorage implements ArchiveStorage {
     return schema.parse(JSON.parse(await response.Body.transformToString()));
   }
 
-  /* The bucket is fully private. Manifests are read through the S3 API with
-   * SDK credentials; media, init, and thumbnail objects are exposed to the
-   * browser as SigV4 presigned GET URLs. Range requests remain possible
-   * because presigned GETs only sign the host header, so the player can
-   * still fetch playlist byte ranges directly. */
+  /* Manifests are read through the authenticated S3 API. Immutable playback
+   * objects can use a public R2 custom domain so their stable URLs are eligible
+   * for edge caching; private buckets fall back to SigV4 presigned GET URLs.
+   * Range requests work with either form. */
   private async resolve(key: string): Promise<Source> {
+    if (this.source.publicBaseUrl) {
+      return { url: publicObjectUrl(this.source.publicBaseUrl, key) };
+    }
     const command = new GetObjectCommand({
       Bucket: this.source.bucket,
       Key: normalizeKey(key),
@@ -149,10 +166,6 @@ export class S3ArchiveStorage implements ArchiveStorage {
 
   async getSource(source: string, _options?: RequestOptions): Promise<Source> {
     return this.resolve(source);
-  }
-
-  async getInit(init: string, _options?: RequestOptions): Promise<Source> {
-    return this.resolve(init);
   }
 
   async getThumbnail(thumbnail: string, _options?: RequestOptions): Promise<Source> {

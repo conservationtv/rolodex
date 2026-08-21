@@ -5,7 +5,13 @@ import type {
   ISODateString,
   StreamArchiveManifest,
 } from "./manifest.js";
-import type { ArchiveStorage, RequestOptions } from "./storage.js";
+import type { ArchiveStorage, RequestOptions, Source } from "./storage.js";
+import {
+  LOCATE_PADDING_NS,
+  SIGNED_URL_LIFETIME_SECONDS,
+  isoFromNs,
+  utcNs,
+} from "./time.js";
 import {
   buildSpans,
   locateWithin,
@@ -15,30 +21,6 @@ import {
   type ThumbnailCue,
   type TimelineLocation,
 } from "./timeline.js";
-import {
-  LOCATE_PADDING_NS,
-  SIGNED_URL_LIFETIME_SECONDS,
-  isoFromNs,
-  utcNs,
-} from "./time.js";
-
-/* Same-module backdoor so PlaylistFactory and ArchivePlayerStore can reach
- * storage and the raw stream manifest without widening the public class. */
-export interface ArchiveManifestClientInternals {
-  storage: ArchiveStorage;
-  getManifest(options?: RequestOptions): Promise<StreamArchiveManifest>;
-}
-
-export const manifestClientInternals = new WeakMap<
-  ArchiveManifestClient,
-  ArchiveManifestClientInternals
->();
-
-export function internalsOf(manifests: ArchiveManifestClient): ArchiveManifestClientInternals {
-  const internals = manifestClientInternals.get(manifests);
-  if (!internals) throw new Error("Unknown ArchiveManifestClient instance");
-  return internals;
-}
 
 /* 1. Manifest discovery, normalization, caching and authentication */
 
@@ -66,6 +48,13 @@ export interface RecordingsAroundResult {
   availableRange?: ISODateRange;
 }
 
+export interface ArchiveDescription {
+  /** Stream identity, e.g. "h265/cam". */
+  stream: string;
+  /** Whole-archive coverage: earliest to latest instant across every day. */
+  coverage?: ISODateRange;
+}
+
 export class ArchiveManifestClient {
   private storage: ArchiveStorage;
   private maxAge: number;
@@ -73,22 +62,16 @@ export class ArchiveManifestClient {
   private maximumThumbnailUrls: number;
   private manifest: CachedFetch<StreamArchiveManifest> | undefined;
   private daily = new Map<string, CachedFetch<DailyArchiveManifest>>();
-  private thumbnailUrls = new Map<string, CachedThumbnailUrl>();
-  private disposed = false;
+  private thumbnails = new Map<string, CachedThumbnailUrl>();
 
-  constructor(storage: ArchiveStorage, options: ArchiveManifestClientOptions) {
+  constructor(storage: ArchiveStorage, options?: ArchiveManifestClientOptions) {
     this.storage = storage;
-    this.maxAge = options.maxAge ?? 30_000;
-    this.maximumDailyManifests = options.maximumDailyManifests ?? 32;
-    this.maximumThumbnailUrls = Math.max(0, Math.floor(options.maximumThumbnailUrls ?? 64));
-    manifestClientInternals.set(this, {
-      storage,
-      getManifest: (requestOptions) => this.getManifest(requestOptions),
-    });
+    this.maxAge = options?.maxAge ?? 30_000;
+    this.maximumDailyManifests = options?.maximumDailyManifests ?? 32;
+    this.maximumThumbnailUrls = Math.max(0, Math.floor(options?.maximumThumbnailUrls ?? 64));
   }
 
   async load(options?: RequestOptions): Promise<DailyEntry> {
-    this.assertUsable();
     const manifest = await this.getManifest(options);
     const latestDate = Object.keys(manifest.days).sort().at(-1);
     const latest = latestDate === undefined ? undefined : manifest.days[latestDate];
@@ -97,17 +80,15 @@ export class ArchiveManifestClient {
   }
 
   async refresh(signal?: AbortSignal): Promise<void> {
-    this.assertUsable();
     this.manifest = undefined;
     this.daily.clear();
-    await this.getManifest(signal ? { signal } : undefined);
+    await this.getManifest({ signal });
   }
 
   async getTimeline(
     range: ISODateRange,
     options?: RequestOptions,
   ): Promise<ArchiveTimeline> {
-    this.assertUsable();
     const startNs = utcNs(range.startedAt);
     const endNs = utcNs(range.endedAt);
     if (endNs < startNs) throw new Error("range.endedAt precedes range.startedAt");
@@ -124,7 +105,6 @@ export class ArchiveManifestClient {
     at: ISODateString,
     options?: RequestOptions,
   ): Promise<TimelineLocation> {
-    this.assertUsable();
     const atNs = utcNs(at);
     const startNs = atNs - LOCATE_PADDING_NS;
     const endNs = atNs + LOCATE_PADDING_NS;
@@ -142,7 +122,6 @@ export class ArchiveManifestClient {
     at: ISODateString,
     options?: RequestOptions,
   ): Promise<ThumbnailCue | null> {
-    this.assertUsable();
     const location = await this.locate(at, options);
     const recording = location.recording;
     const track = recording?.thumbnail;
@@ -171,19 +150,38 @@ export class ArchiveManifestClient {
     };
   }
 
+  /** Stream identity and whole-archive coverage, served from the cached
+   * stream manifest (so repeated calls within `maxAge` cost nothing). */
+  async describe(options?: RequestOptions): Promise<ArchiveDescription> {
+    const manifest = await this.getManifest(options);
+    let coverage: ISODateRange | undefined;
+    for (const day of Object.values(manifest.days)) {
+      coverage = coverage === undefined
+        ? { startedAt: day.startedAt, endedAt: day.endedAt }
+        : {
+            startedAt: utcNs(day.startedAt) < utcNs(coverage.startedAt) ? day.startedAt : coverage.startedAt,
+            endedAt: utcNs(day.endedAt) > utcNs(coverage.endedAt) ? day.endedAt : coverage.endedAt,
+          };
+    }
+    const description: ArchiveDescription = { stream: manifest.stream };
+    if (coverage) description.coverage = coverage;
+    return description;
+  }
+
+  /** Resolve a playback object key (media or init MP4) to a fetchable URL.
+   * Byte ranges live in the compiled playlist, so URLs are whole-object. */
+  async getVideo(key: string, options?: RequestOptions): Promise<Source> {
+    return this.storage.getSource(key, options);
+  }
+
   dispose(): void {
-    this.disposed = true;
     this.manifest = undefined;
     this.daily.clear();
-    this.thumbnailUrls.clear();
+    this.thumbnails.clear();
   }
 
-  private assertUsable(): void {
-    if (this.disposed) throw new Error("ArchiveManifestClient has been disposed");
-  }
 
   private getManifest(options?: RequestOptions): Promise<StreamArchiveManifest> {
-    this.assertUsable();
     const cached = this.manifest;
     if (cached && Date.now() - cached.fetchedAt <= this.maxAge) return cached.value;
     const entry: CachedFetch<StreamArchiveManifest> = {
@@ -227,14 +225,14 @@ export class ArchiveManifestClient {
     options?: RequestOptions,
   ): Promise<ThumbnailCue["image"]> {
     const now = Date.now();
-    const cached = this.thumbnailUrls.get(key);
+    const cached = this.thumbnails.get(key);
     if (
       cached?.value !== undefined
       && cached.expiresAtMs - now > THUMBNAIL_URL_REFRESH_MARGIN_MS
     ) {
       /* Re-insert for least-recently-used ordering. */
-      this.thumbnailUrls.delete(key);
-      this.thumbnailUrls.set(key, cached);
+      this.thumbnails.delete(key);
+      this.thumbnails.set(key, cached);
       return cached.value;
     }
 
@@ -256,15 +254,15 @@ export class ArchiveManifestClient {
     });
     entry.value = value;
 
-    this.thumbnailUrls.delete(key);
-    if (this.maximumThumbnailUrls > 0) this.thumbnailUrls.set(key, entry);
+    this.thumbnails.delete(key);
+    if (this.maximumThumbnailUrls > 0) this.thumbnails.set(key, entry);
     value.catch(() => {
-      if (this.thumbnailUrls.get(key) === entry) this.thumbnailUrls.delete(key);
+      if (this.thumbnails.get(key) === entry) this.thumbnails.delete(key);
     });
-    while (this.thumbnailUrls.size > this.maximumThumbnailUrls) {
-      const oldest = this.thumbnailUrls.keys().next().value;
+    while (this.thumbnails.size > this.maximumThumbnailUrls) {
+      const oldest = this.thumbnails.keys().next().value;
       if (oldest === undefined) break;
-      this.thumbnailUrls.delete(oldest);
+      this.thumbnails.delete(oldest);
     }
     return value;
   }
