@@ -13,7 +13,7 @@ verify_codec() {
   cargo build --quiet --release -p rolodex --no-default-features --features "$feature" \
     --manifest-path "$repo_dir/Cargo.toml"
 
-  while IFS= read -r -d '' fixture; do
+  while IFS= read -r -d '' fixture <&3; do
     local base output_dir thumb dimensions log score
     base="$(basename "$fixture" .mp4)"
     output_dir="$work_dir/$codec-$base"
@@ -35,7 +35,7 @@ verify_codec() {
       exit 1
     fi
     echo "$fixture: SSIM $score"
-  done < <(find "$repo_dir/fixtures/$codec" -type f -name '*.mp4' -print0 | sort -z)
+  done 3< <(find "$repo_dir/fixtures/$codec" -type f -name '*.mp4' -print0 | sort -z)
 
   local clip_fixture clip_dir source_stream clip_stream source_duration clip_duration clip_thumb clip_dimensions clip_log clip_score
   clip_fixture="$repo_dir/fixtures/$codec/mediamtx-v1.18.2-640x360.mp4"
