@@ -1,5 +1,6 @@
 import type { ArchiveManifestClient } from "./manifest-client.js";
-import type { ArchiveRecording, ISODateString } from "./manifest.js";
+import type { ArchiveRecording, ArchivePiece, ISODateString } from "./manifest.js";
+import type { MediaPiece } from "./media-pieces.js";
 import type { Source } from "./storage.js";
 import {
   firstSegmentAtOrAfter,
@@ -35,6 +36,7 @@ export interface PlaylistLease extends CompiledPlaylist {
 
 export interface CompiledPlaylist {
   text: string;
+  mediaSegments?: ReadonlyMap<string, readonly MediaPiece[]>;
   startedAt: ISODateString;
   endedAt: ISODateString;
   initial: number;
@@ -53,6 +55,7 @@ export interface PlaylistFactoryOptions {
 export interface VirtualSegment {
   startNs: bigint;
   endNs: bigint;
+  pieces?: readonly ArchivePiece[];
   byteOffset: bigint;
   byteLength: bigint;
 }
@@ -66,6 +69,7 @@ export interface CompiledRecording {
 export interface ResolvedRecording extends CompiledRecording {
   init: Source;
   source: Source;
+  sources: ReadonlyMap<string, Source>;
 }
 
 /** Maps the playlist's contiguous media time onto discontinuous UTC. */
@@ -149,13 +153,14 @@ export class PlaylistFactory {
         const startNs = segment.presentationStartNs;
         const endNs = next ? next.presentationStartNs : item.durationNs;
         const previous = groups[groups.length - 1];
-        const contiguous = previous !== undefined
+        const contiguous = previous !== undefined && !previous.pieces && !segment.pieces
           && previous.byteOffset + previous.byteLength === BigInt(segment.byteOffset);
-        if (previous && contiguous && previous.endNs - previous.startNs < targetNs) {
+        if (previous && contiguous && previous.endNs - previous.startNs < targetNs && endNs - previous.startNs <= 6n * NS_PER_SECOND && previous.byteLength + BigInt(segment.byteLength) <= 4_000_000n) {
           previous.endNs = endNs;
           previous.byteLength += BigInt(segment.byteLength);
         } else {
           groups.push({
+            pieces: segment.pieces,
             startNs,
             endNs,
             byteOffset: BigInt(segment.byteOffset),
@@ -172,7 +177,9 @@ export class PlaylistFactory {
         this.manifests.getVideo(item.recording.init),
         this.manifests.getVideo(item.recording.source),
       ]);
-      return { ...item, init, source };
+      const keys = new Set(item.groups.flatMap(group => group.pieces?.map(piece => piece.source) ?? []));
+      const sources = new Map(await Promise.all([...keys].map(async key => [key, await this.manifests.getVideo(key)] as const)));
+      return { ...item, init, source, sources };
     }));
 
     let maximumNs = 0n;
@@ -183,6 +190,8 @@ export class PlaylistFactory {
       }
     }
 
+    const mediaSegments = new Map<string, readonly MediaPiece[]>();
+    const segmentPrefix = `https://rolodex.invalid/${crypto.randomUUID()}/`;
     const lines = [
       "#EXTM3U",
       "#EXT-X-VERSION:7",
@@ -200,11 +209,11 @@ export class PlaylistFactory {
       for (const group of item.groups) {
         const durationNs = group.endNs - group.startNs;
         pieces.push({ mediaStartNs: mediaCursorNs, durationNs, utcStartNs: item.startNs + group.startNs });
+        const media = segmentMedia(group, item, mediaSegments, segmentPrefix);
         lines.push(
           `#EXT-X-PROGRAM-DATE-TIME:${isoFromNs(item.startNs + group.startNs)}`,
           `#EXTINF:${decimalSeconds(durationNs)},`,
-          `#EXT-X-BYTERANGE:${group.byteLength}@${group.byteOffset}`,
-          item.source.url,
+          ...media,
         );
         mediaCursorNs += durationNs;
       }
@@ -242,6 +251,7 @@ export class PlaylistFactory {
 
     return {
       text: lines.join("\n"),
+      mediaSegments,
       startedAt: isoFromNs(first.utcStartNs),
       endedAt: isoFromNs(last.utcStartNs + last.durationNs),
       initial: mediaTimeAt(request.at),
@@ -270,4 +280,18 @@ export class PlaylistFactory {
     this.disposed = true;
     for (const revoke of Array.from(this.revocations)) revoke();
   }
+}
+
+function segmentMedia(group: VirtualSegment, item: ResolvedRecording, segments: Map<string, readonly MediaPiece[]>, prefix: string): string[] {
+  if (!group.pieces) return [`#EXT-X-BYTERANGE:${group.byteLength}@${group.byteOffset}`, item.source.url];
+  const pieces = group.pieces.map(piece => {
+    const source = item.sources.get(piece.source);
+    if (!source) throw new Error("Archive piece URL was not resolved");
+    return { url: source.url, byteOffset: piece.byteOffset, byteLength: piece.byteLength };
+  });
+  const first = pieces[0];
+  if (pieces.length === 1 && first) return [`#EXT-X-BYTERANGE:${first.byteLength}@${first.byteOffset}`, first.url];
+  const url = `${prefix}${segments.size}.m4s`;
+  segments.set(url, pieces);
+  return [url];
 }

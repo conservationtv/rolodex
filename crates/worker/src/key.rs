@@ -2,6 +2,7 @@
 pub struct ArtifactKeys {
     pub thumbnail: String,
     pub index: String,
+    repair: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,11 +33,12 @@ pub fn derive_artifact_keys(
     if stream.is_empty() || recording_name.is_empty() {
         return None;
     }
-    let recording_root = format!("{artifact_prefix}{stem}/");
+    let recording_root = format!("{artifact_prefix}media/{stem}/");
     let index_root = format!("{artifact_prefix}{stream}/indexes/");
     Some(ArtifactKeys {
         thumbnail: format!("{recording_root}thumbnail.jpg"),
         index: format!("{index_root}{recording_name}.json"),
+        repair: format!("repairs/{stem}/"),
     })
 }
 
@@ -76,7 +78,7 @@ pub fn derive_archive_keys(
     Some(ArchiveKeys {
         stream: logical_stream,
         root: format!("{artifact_stream}/archive.json"),
-        day: format!("{artifact_stream}/archive/{date}.json"),
+        day: format!("{artifact_stream}/archive/{date}/head.json"),
     })
 }
 
@@ -94,8 +96,9 @@ mod tests {
                 "init/",
             ),
             Some(ArtifactKeys {
-                thumbnail: "artifacts/camera-12/2026-08-09_184501/thumbnail.jpg".into(),
+                thumbnail: "artifacts/media/camera-12/2026-08-09_184501/thumbnail.jpg".into(),
                 index: "artifacts/camera-12/indexes/2026-08-09_184501.json".into(),
+                repair: "repairs/camera-12/2026-08-09_184501/".into(),
             })
         );
     }
@@ -117,6 +120,18 @@ mod tests {
         )
         .unwrap();
         assert!(older.index < newer.index);
+        assert_eq!(
+            older.repair_prefix(),
+            "repairs/demo/2026-08-09_18-45-01-000001/"
+        );
+        let uppercase = derive_artifact_keys(
+            "recordings/demo/clip.MP4",
+            "recordings/",
+            "artifacts/",
+            "init/",
+        )
+        .unwrap();
+        assert_eq!(uppercase.repair_prefix(), "repairs/demo/clip/");
         assert_eq!(
             older.index,
             "artifacts/h264/demo/indexes/2026-08-09_18-45-01-000001.json"
@@ -188,6 +203,15 @@ mod tests {
 
     #[test]
     fn maps_recording_to_stream_and_daily_archive_manifests() {
+        let keys = derive_archive_keys(
+            "recordings/h265/cam/clip.mp4",
+            "recordings/h265/",
+            "artifacts/h265/",
+            "2026-08-13",
+        )
+        .unwrap();
+        assert_eq!(keys.day_prefix(), "artifacts/h265/cam/archive/2026-08-13");
+        assert_eq!(keys.archive_prefix(), "artifacts/h265/cam/archive/");
         assert_eq!(
             derive_archive_keys(
                 "recordings/h265/cam/2026-08-13_12-00-00.mp4",
@@ -198,8 +222,32 @@ mod tests {
             Some(ArchiveKeys {
                 stream: "h265/cam".into(),
                 root: "artifacts/h265/cam/archive.json".into(),
-                day: "artifacts/h265/cam/archive/2026-08-13.json".into(),
+                day: "artifacts/h265/cam/archive/2026-08-13/head.json".into(),
             })
         );
+    }
+}
+
+#[allow(dead_code)]
+impl ArtifactKeys {
+    pub fn repair_prefix(&self) -> String {
+        self.repair.clone()
+    }
+}
+
+#[allow(dead_code)]
+impl ArchiveKeys {
+    pub fn day_prefix(&self) -> &str {
+        self.day
+            .strip_suffix("/head.json")
+            .expect("derived daily head key")
+    }
+    pub fn archive_prefix(&self) -> String {
+        format!(
+            "{}archive/",
+            self.root
+                .strip_suffix("archive.json")
+                .expect("derived archive key")
+        )
     }
 }

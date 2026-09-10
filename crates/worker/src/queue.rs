@@ -1,29 +1,22 @@
-use std::collections::HashSet;
-
-use rolodex_core::{
-    Error as CoreError, ProcessorOptions, SourceIdentity, parse_duration_ns, process_recording,
+use crate::archive_store::{
+    ArchiveError, MAX_DAILY_ARCHIVE_BYTES, load_json, update_archive_manifests,
 };
-use serde::{Serialize, de::DeserializeOwned};
+use rolodex_core::{Error as CoreError, ProcessorOptions, SourceIdentity, parse_duration_ns};
 use serde_json::{Value, json};
 use worker::{
-    Bucket, Conditional, Context, Env, HttpMetadata, MessageBatch, MessageExt,
-    Result as WorkerResult, console_log,
+    Context, Env, HttpMetadata, MessageBatch, MessageExt, Result as WorkerResult, console_log,
 };
 
 use crate::{
     event::R2Event,
     identity::ArtifactIdentity,
-    key::{ArchiveKeys, ArtifactKeys, derive_archive_keys, derive_artifact_keys, init_key},
-    manifest::{ArchiveDay, ArchiveRecording, DailyArchive, StreamArchive},
+    key::{ArchiveKeys, ArtifactKeys, derive_artifact_keys, init_key},
     r2_source::R2Source,
 };
 
 const BUCKET_BINDING: &str = "MEDIA_BUCKET";
 const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
-const MANIFEST_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
-const MAX_MANIFEST_WRITE_ATTEMPTS: usize = 5;
-const MAX_DAILY_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
-const MAX_STREAM_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024;
+const MANIFEST_CACHE_CONTROL: &str = "public, max-age=5, must-revalidate";
 
 #[derive(Debug)]
 struct Config {
@@ -31,6 +24,7 @@ struct Config {
     artifact_prefix: String,
     init_prefix: String,
     source_bucket: Option<String>,
+    retention_seconds: u64,
     options: ProcessorOptions,
 }
 
@@ -113,6 +107,7 @@ impl Config {
             artifact_prefix,
             init_prefix,
             source_bucket: optional_string(env, "SOURCE_BUCKET"),
+            retention_seconds: optional_number(env, "RETENTION_SECONDS", 0)?,
             options,
         })
     }
@@ -293,7 +288,9 @@ async fn process(
                             .value;
                     let archive_keys = update_archive_manifests(
                         &bucket,
-                        config,
+                        &config.source_prefix,
+                        &config.artifact_prefix,
+                        config.retention_seconds,
                         &metadata,
                         committed_init,
                         committed_thumbnail,
@@ -315,13 +312,15 @@ async fn process(
         source_object.size(),
         source_etag.clone(),
     );
-    let output = process_recording(
+    let sink = crate::repair_sink::R2RepairSink::new(bucket.clone(), keys.repair_prefix());
+    let output = rolodex_core::processor::process_recording_with_repairs(
         &source,
         SourceIdentity {
             object_key: event.object.key.clone(),
             etag: source_etag.clone(),
         },
         config.options,
+        &sink,
     )
     .await
     .map_err(JobFailure::from_core)?;
@@ -384,7 +383,7 @@ async fn process(
         .put(&keys.index, metadata_json)
         .http_metadata(HttpMetadata {
             content_type: Some("application/json".into()),
-            cache_control: Some(IMMUTABLE_CACHE_CONTROL.into()),
+            cache_control: Some(MANIFEST_CACHE_CONTROL.into()),
             ..HttpMetadata::default()
         })
         .custom_metadata(artifact_metadata)
@@ -394,7 +393,9 @@ async fn process(
 
     let archive_keys = update_archive_manifests(
         &bucket,
-        config,
+        &config.source_prefix,
+        &config.artifact_prefix,
+        config.retention_seconds,
         &output.metadata,
         init_key.clone(),
         thumbnail_created.then(|| keys.thumbnail.clone()),
@@ -410,192 +411,6 @@ async fn process(
         replaced_index,
         metrics: output.metrics,
     })
-}
-
-struct VersionedJson<T> {
-    value: T,
-    etag: String,
-}
-
-async fn load_json<T: DeserializeOwned>(
-    bucket: &Bucket,
-    key: &str,
-    maximum_bytes: u64,
-) -> std::result::Result<Option<VersionedJson<T>>, JobFailure> {
-    let Some(object) = bucket
-        .get(key)
-        .execute()
-        .await
-        .map_err(|error| JobFailure::Retry(format!("R2 manifest GET {key} failed: {error}")))?
-    else {
-        return Ok(None);
-    };
-    if object.size() > maximum_bytes {
-        return Err(JobFailure::Permanent(format!(
-            "manifest {key} is {} bytes, above the {maximum_bytes}-byte limit",
-            object.size()
-        )));
-    }
-    let etag = object.etag();
-    let body = object
-        .body()
-        .ok_or_else(|| JobFailure::Retry(format!("R2 manifest GET {key} returned no body")))?;
-    let bytes = body
-        .bytes()
-        .await
-        .map_err(|error| JobFailure::Retry(format!("R2 manifest body {key} failed: {error}")))?;
-    let value = serde_json::from_slice(&bytes).map_err(|error| {
-        JobFailure::Permanent(format!("manifest {key} contains invalid JSON: {error}"))
-    })?;
-    Ok(Some(VersionedJson { value, etag }))
-}
-
-async fn put_json_if_current<T: Serialize>(
-    bucket: &Bucket,
-    key: &str,
-    value: &T,
-    etag: Option<String>,
-) -> std::result::Result<bool, JobFailure> {
-    let bytes = serde_json::to_vec(value).map_err(|error| {
-        JobFailure::Permanent(format!("manifest serialization failed: {error}"))
-    })?;
-    let condition = match etag {
-        Some(etag) => Conditional {
-            etag_matches: Some(etag),
-            ..Conditional::default()
-        },
-        None => Conditional {
-            etag_does_not_match: Some("*".into()),
-            ..Conditional::default()
-        },
-    };
-    let result = bucket
-        .put(key, bytes)
-        .only_if(condition)
-        .http_metadata(HttpMetadata {
-            content_type: Some("application/json".into()),
-            cache_control: Some(MANIFEST_CACHE_CONTROL.into()),
-            ..HttpMetadata::default()
-        })
-        .execute()
-        .await
-        .map_err(|error| JobFailure::Retry(format!("R2 manifest PUT {key} failed: {error}")))?;
-    Ok(result.is_some())
-}
-
-async fn update_archive_manifests(
-    bucket: &Bucket,
-    config: &Config,
-    metadata: &rolodex_core::RecordingMetadata,
-    init_key: String,
-    thumbnail_key: Option<String>,
-) -> std::result::Result<ArchiveKeys, JobFailure> {
-    let recording = ArchiveRecording::from_metadata(metadata, init_key, thumbnail_key)
-        .map_err(JobFailure::Permanent)?;
-    let date = recording
-        .started_at
-        .get(..10)
-        .ok_or_else(|| JobFailure::Permanent("recording UTC start is not an ISO date".into()))?
-        .to_string();
-    let archive_keys = derive_archive_keys(
-        &metadata.source.object_key,
-        &config.source_prefix,
-        &config.artifact_prefix,
-        &date,
-    )
-    .ok_or_else(|| JobFailure::Permanent("could not derive archive manifest keys".into()))?;
-
-    let day = update_daily_archive(bucket, &archive_keys, recording, &date).await?;
-    update_stream_archive(bucket, &archive_keys, &date, day).await?;
-    Ok(archive_keys)
-}
-
-async fn update_daily_archive(
-    bucket: &Bucket,
-    keys: &ArchiveKeys,
-    recording: ArchiveRecording,
-    date: &str,
-) -> std::result::Result<ArchiveDay, JobFailure> {
-    for _ in 0..MAX_MANIFEST_WRITE_ATTEMPTS {
-        let existing =
-            load_json::<DailyArchive>(bucket, &keys.day, MAX_DAILY_ARCHIVE_BYTES).await?;
-        let (mut archive, etag) = match existing {
-            Some(existing) => {
-                existing
-                    .value
-                    .validate(&keys.stream, &date)
-                    .map_err(JobFailure::Permanent)?;
-                (existing.value, Some(existing.etag))
-            }
-            None => (
-                DailyArchive::new(keys.stream.clone(), date.to_string()),
-                None,
-            ),
-        };
-        archive
-            .merge(recording.clone())
-            .map_err(JobFailure::Permanent)?;
-        let coverage = archive
-            .coverage(keys.day.clone())
-            .map_err(JobFailure::Permanent)?;
-        if put_json_if_current(bucket, &keys.day, &archive, etag).await? {
-            return Ok(coverage);
-        }
-    }
-    Err(JobFailure::Retry(format!(
-        "daily archive {} changed during every conditional write attempt",
-        keys.day
-    )))
-}
-
-async fn update_stream_archive(
-    bucket: &Bucket,
-    keys: &ArchiveKeys,
-    date: &str,
-    day: ArchiveDay,
-) -> std::result::Result<(), JobFailure> {
-    for _ in 0..MAX_MANIFEST_WRITE_ATTEMPTS {
-        let existing =
-            load_json::<StreamArchive>(bucket, &keys.root, MAX_STREAM_ARCHIVE_BYTES).await?;
-        let (mut archive, etag) = match existing {
-            Some(existing) => {
-                existing
-                    .value
-                    .validate(&keys.stream)
-                    .map_err(JobFailure::Permanent)?;
-                (existing.value, Some(existing.etag))
-            }
-            None => (StreamArchive::new(keys.stream.clone()), None),
-        };
-
-        let mut existing_day_keys = HashSet::new();
-        for existing_day in archive.days.values() {
-            if existing_day.key == keys.day
-                || bucket
-                    .head(&existing_day.key)
-                    .await
-                    .map_err(|error| {
-                        JobFailure::Retry(format!(
-                            "R2 daily archive HEAD {} failed: {error}",
-                            existing_day.key
-                        ))
-                    })?
-                    .is_some()
-            {
-                existing_day_keys.insert(existing_day.key.clone());
-            }
-        }
-        archive.retain_day_keys(&existing_day_keys);
-        archive.merge_day(date.into(), day.clone());
-
-        if put_json_if_current(bucket, &keys.root, &archive, etag).await? {
-            return Ok(());
-        }
-    }
-    Err(JobFailure::Retry(format!(
-        "stream archive {} changed during every conditional write attempt",
-        keys.root
-    )))
 }
 
 fn log_success(message_id: &str, event: &R2Event, result: JobResult) {
@@ -664,4 +479,13 @@ fn log_outcome(message_id: &str, event: &R2Event, level: &str, outcome: &str, ex
         fields.extend(extra_fields);
     }
     console_log!("{}", value);
+}
+
+impl From<ArchiveError> for JobFailure {
+    fn from(error: ArchiveError) -> Self {
+        match error {
+            ArchiveError::Permanent(message) => Self::Permanent(message),
+            ArchiveError::Retry(message) => Self::Retry(message),
+        }
+    }
 }

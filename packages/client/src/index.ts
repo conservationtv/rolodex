@@ -65,3 +65,23 @@ export type {
   ArchivePlayerInitializeOptions,
   ArchivePlayerSeekOptions,
 } from "./store.js";
+
+export { HttpArchiveStorage } from "./http-storage.js";
+export type { HttpArchiveStorageOptions } from "./http-storage.js";
+export { ArchiveDocumentCache } from "./document-cache.js";
+export type { DocumentLoader, DocumentResponse } from "./document-cache.js";
+export {
+  ArchiveDocumentSchema,
+  ArchiveHeadSchema,
+  ArchivePageDirectorySchema,
+  DailyArchiveManifestSchema,
+  StreamArchiveManifestSchema,
+} from "./manifest.js";
+export type {
+  ArchiveDocument,
+  ArchiveHead,
+  ArchivePageDirectory,
+  ArchivePageEntry,
+} from "./manifest.js";
+
+export type { ArchiveCredentialProvider } from "./credentials.js";

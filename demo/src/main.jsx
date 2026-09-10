@@ -590,7 +590,7 @@ function Configuration({ onConnect }) {
 function Archive({ source, connectionId }) {
   const resources = useMemo(() => {
     const storage = new S3ArchiveStorage(source);
-    return { manifests: new ArchiveManifestClient(storage, {}) };
+    return new ArchiveManifestClient(storage)
   }, [source]);
   useEffect(() => () => resources.manifests.dispose(), [resources]);
 

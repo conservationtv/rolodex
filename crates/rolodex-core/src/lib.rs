@@ -14,6 +14,7 @@ pub mod jpeg;
 pub mod mp4;
 pub mod processor;
 mod reader;
+pub mod remux;
 pub mod scale;
 pub mod source;
 mod sprite;

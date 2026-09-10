@@ -18,7 +18,7 @@ use crate::{
     sprite::{SpriteBuilder, SpriteLayout},
 };
 
-pub const PROCESSOR_VERSION: &str = "6";
+pub const PROCESSOR_VERSION: &str = "7";
 pub const METADATA_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,8 +152,32 @@ pub fn parse_duration_ns(value: &str) -> Result<u64> {
         .ok_or(Error::Limit("duration exceeds u64 nanoseconds"))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlaybackPart {
+    pub source: String,
+    pub offset: u64,
+    pub length: u64,
+    #[serde(with = "crate::decimal_string::scalar")]
+    pub presentation_start_ns: i64,
+    pub starts_with_sync: bool,
+}
+
+/// Why lossless repair did not produce an alternate playback layout.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RepairSkipReason {
+    UnsupportedTracks,
+    UnsupportedGop,
+    NotNeeded,
+    OversizedPart,
+    ByteBudgetExhausted,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProcessorMetrics {
+    /// None when repair was not attempted or completed successfully.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_skip_reason: Option<RepairSkipReason>,
     pub source_bytes: u64,
     pub range_requests: u32,
     pub bytes_read: u64,
@@ -186,6 +210,8 @@ pub struct RecordingMetadata {
     pub init: InitMetadata,
     pub tracks: Vec<TrackMetadata>,
     pub parts: Vec<PartMetadata>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub playback_parts: Vec<PlaybackPart>,
     pub thumbnail: ThumbnailMetadata,
 }
 
@@ -372,15 +398,15 @@ pub struct ProcessorOutput {
 /// Metadata and decoder state produced without reading video sample payloads.
 ///
 /// The public fields are the durable index artifacts. Private fields retain the
-/// parsed information needed for a later thumbnail pass over the same source.
+/// parsed information needed for later thumbnail and repair passes over the same source.
 pub struct RecordingIndex {
     pub metadata: RecordingMetadata,
     pub init_mp4: Vec<u8>,
     pub metrics: ProcessorMetrics,
-    movie: ArchiveMovie,
-    video_samples: Vec<TimedVideoSample>,
+    pub(crate) movie: ArchiveMovie,
+    pub(crate) video_samples: Vec<TimedVideoSample>,
     video_timing: VideoTiming,
-    options: ProcessorOptions,
+    pub(crate) options: ProcessorOptions,
     cache: FileCache,
 }
 
@@ -390,9 +416,9 @@ struct PendingFragment {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct TimedVideoSample {
-    location: SampleLocation,
-    decode_start_ns: i64,
+pub(crate) struct TimedVideoSample {
+    pub(crate) location: SampleLocation,
+    pub(crate) decode_start_ns: i64,
     decode_end_ns: i64,
     presentation_start_ns: i64,
 }
@@ -420,6 +446,24 @@ where
     S: ByteSource + ?Sized,
     D: VideoDecoder,
 {
+    process_recording_inner::<S, D>(source, identity, options, None).await
+}
+
+pub async fn process_recording_with_repairs<S: ByteSource + ?Sized>(
+    source: &S,
+    identity: SourceIdentity,
+    options: ProcessorOptions,
+    sink: &dyn crate::remux::RepairSink,
+) -> Result<ProcessorOutput> {
+    process_recording_inner::<S, SelectedDecoder>(source, identity, options, Some(sink)).await
+}
+
+async fn process_recording_inner<S: ByteSource + ?Sized, D: VideoDecoder>(
+    source: &S,
+    identity: SourceIdentity,
+    options: ProcessorOptions,
+    sink: Option<&dyn crate::remux::RepairSink>,
+) -> Result<ProcessorOutput> {
     let thumbnail_options = options.thumbnail;
     let mut index = index_recording_inner(source, identity, options).await?;
     let mut metrics = index.metrics.clone();
@@ -449,7 +493,12 @@ where
         (None, ThumbnailMetadata::unavailable(None, None))
     };
     metrics.thumbnail_bytes = thumbnail_jpeg.as_ref().map_or(0, |jpeg| jpeg.len() as u64);
+    // Repairs share the budget already consumed by indexing and thumbnail reads.
     index.metrics = metrics;
+    if let Some(sink) = sink {
+        index.metadata.playback_parts =
+            crate::remux::repair_recording(source, &mut index, sink).await?;
+    }
     index.metadata.thumbnail = thumbnail_metadata;
     Ok(ProcessorOutput {
         thumbnail_jpeg,
@@ -644,6 +693,7 @@ where
             .map(track_metadata)
             .collect(),
         parts,
+        playback_parts: Vec::new(),
         thumbnail: ThumbnailMetadata::unavailable(None, None),
     };
 
@@ -1415,7 +1465,7 @@ mod tests {
 
         assert!(output.thumbnail_jpeg.is_none());
         assert_eq!(output.metadata.schema_version, 4);
-        assert_eq!(output.metadata.processor_version, "6");
+        assert_eq!(output.metadata.processor_version, "7");
         assert!(output.metadata.recording.video_duration_ns > 0);
         assert_eq!(output.metadata.thumbnail.frame_count, 0);
         assert_eq!(output.metadata.thumbnail.frames, Vec::new());

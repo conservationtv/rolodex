@@ -1,8 +1,13 @@
+import { createServer } from "node:http";
+import Hls from "hls.js";
+import { assemblePieces, createPieceLoader } from "./media-pieces.js";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import {
   ArchiveManifestClient,
+  ArchiveDocumentCache,
+  HttpArchiveStorage,
   ArchivePlayerStore,
   PlaylistFactory,
   S3ArchiveStorage,
@@ -16,7 +21,7 @@ import {
 import { DailyArchiveManifestSchema } from "./manifest.js";
 
 const streamManifest: StreamArchiveManifest = {
-  version: 1,
+  version: 2,
   stream: "h265/cam",
   days: {
     "2026-08-01": {
@@ -168,19 +173,19 @@ describe("S3ArchiveStorage", () => {
 
   it("presigns media URLs against the private bucket", async () => {
     const startedAt = Date.now();
-    const storage = new S3ArchiveStorage(createArchiveSource({
-      type: "credentials",
-      accessKeyId: "AKIA_TEST",
-      secretAccessKey: "test-secret",
-    }));
+    const storage = new S3ArchiveStorage(
+      createArchiveSource({
+        type: "credentials",
+        accessKeyId: "AKIA_TEST",
+        secretAccessKey: "test-secret",
+      }),
+    );
     const { url, expiresAt } = await storage.getSource(
       "recordings/h265/cam/2026-08-13_12-00-00.mp4",
     );
     const parsed = new URL(url);
     expect(parsed.host).toBe("account.r2.cloudflarestorage.com");
-    expect(parsed.pathname).toBe(
-      "/archive/recordings/h265/cam/2026-08-13_12-00-00.mp4",
-    );
+    expect(parsed.pathname).toBe("/archive/recordings/h265/cam/2026-08-13_12-00-00.mp4");
     expect(parsed.searchParams.get("X-Amz-Signature")).toBeTruthy();
     expect(parsed.searchParams.get("X-Amz-Expires")).toBe("3600");
     expect(Date.parse(expiresAt ?? "")).toBeGreaterThanOrEqual(startedAt + 3_599_000);
@@ -188,13 +193,15 @@ describe("S3ArchiveStorage", () => {
 
   it("clamps the signing lifetime to temporary credential expiry", async () => {
     const credentialExpiresAt = new Date(Date.now() + 600_000).toISOString();
-    const storage = new S3ArchiveStorage(createArchiveSource({
-      type: "temporary_credentials",
-      accessKeyId: "AKIA_TEST",
-      secretAccessKey: "test-secret",
-      sessionToken: "session-token",
-      expiresAt: credentialExpiresAt,
-    }));
+    const storage = new S3ArchiveStorage(
+      createArchiveSource({
+        type: "temporary_credentials",
+        accessKeyId: "AKIA_TEST",
+        secretAccessKey: "test-secret",
+        sessionToken: "session-token",
+        expiresAt: credentialExpiresAt,
+      }),
+    );
     const { url, expiresAt } = await storage.getThumbnail(
       "artifacts/h265/cam/2026-08-13_12-00-00/thumbnail.jpg",
     );
@@ -234,6 +241,24 @@ describe("ArchiveManifestClient", () => {
     });
     /* Only the overlapping day shard is fetched. */
     expect(storage.dailyFetches).toEqual(["artifacts/h265/cam/archive/2026-08-13.json"]);
+  });
+
+  it("clips retention coverage and seeks as UTC advances without new recordings", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-13T13:05:00.000Z"));
+      const { client } = createClient({ retentionSeconds: 3600 });
+      const range = { startedAt: "2026-08-13T12:00:00.000Z", endedAt: "2026-08-13T12:10:00.000Z" };
+      const timeline = await client.getTimeline(range);
+      expect(timeline.requestedRange.startedAt).toBe("2026-08-13T12:05:00.000Z");
+      expect(timeline.spans[0]?.startedAt).toBe("2026-08-13T12:05:00.000Z");
+      expect((await client.locate(range.startedAt)).utc).toBe("2026-08-13T12:05:00.000Z");
+      expect(await client.getThumbnail(range.startedAt)).toBeNull();
+      vi.setSystemTime(new Date("2026-08-13T13:11:00.000Z"));
+      expect((await client.getTimeline(range)).spans).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("caches the root manifest between calls", async () => {
@@ -385,9 +410,7 @@ describe("PlaylistFactory", () => {
     expect(playlist.endedAt).toBe("2026-08-13T12:10:00.000Z");
     expect(playlist.mediaTimeAt("2026-08-13T23:55:00.000Z")).toBe(592);
     expect(playlist.utcAt(592)).toBe("2026-08-13T12:10:00.000Z");
-    expect(lines).not.toContain(
-      "https://media.test/recordings/h265/cam/2026-08-13_23-55-00.mp4",
-    );
+    expect(lines).not.toContain("https://media.test/recordings/h265/cam/2026-08-13_23-55-00.mp4");
   });
 
   it("hands out revocable blob URL leases", async () => {
@@ -519,7 +542,10 @@ describe("ArchivePlayerStore", () => {
   it("enters the real gap when playback reaches a recording boundary", async () => {
     const { store } = createStore();
     await store.seek("2026-08-13T12:09:00.000Z");
-    vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn(() => 1),
+    );
     vi.stubGlobal("cancelAnimationFrame", vi.fn());
     await store.play();
 
@@ -576,5 +602,267 @@ describe("ArchivePlayerStore", () => {
       endedAt: "2026-08-14T00:05:00.000Z",
     });
     store.dispose();
+  });
+});
+
+describe("paged archive caching", () => {
+  it("subtracts Age, revalidates with ETag, and retains the parsed value after 304", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-06T12:00:00Z"));
+    try {
+      const loader = vi.fn(async (_key: string, etag: string | undefined) => ({
+        status: etag ? 304 : 200,
+        headers: new Headers({
+          "cache-control": "public, max-age=10",
+          age: etag ? "0" : "8",
+          date: new Date().toUTCString(),
+          etag: '"one"',
+        }),
+        body: etag ? undefined : JSON.stringify(streamManifest),
+      }));
+      const cache = new ArchiveDocumentCache(loader);
+      const first = await cache.read("archive.json");
+      vi.advanceTimersByTime(1_999);
+      expect(await cache.read("archive.json")).toBe(first);
+      expect(loader).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1);
+      expect(await cache.read("archive.json")).toBe(first);
+      expect(loader.mock.calls[1]?.[1]).toBe('"one"');
+      vi.advanceTimersByTime(9_999);
+      expect(await cache.read("archive.json")).toBe(first);
+      expect(loader).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retain no-store responses or reuse no-cache without validation", async () => {
+    const loader = vi.fn(async () => ({
+      status: 200,
+      headers: new Headers({ "cache-control": "no-store, max-age=999", etag: '"one"' }),
+      body: JSON.stringify(streamManifest),
+    }));
+    const cache = new ArchiveDocumentCache(loader);
+    await cache.read("archive.json");
+    await cache.read("archive.json");
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(loader).toHaveBeenLastCalledWith("archive.json", undefined, undefined);
+    loader.mockImplementation(async () => ({
+      status: 200,
+      headers: new Headers({ "cache-control": "no-cache, max-age=999", etag: '"one"' }),
+      body: JSON.stringify(streamManifest),
+    }));
+    await cache.read("archive.json");
+    await cache.read("archive.json");
+    expect(loader).toHaveBeenLastCalledWith("archive.json", '"one"', undefined);
+  });
+
+  it("keeps immutable pages across refreshes and only loads pages intersecting a seek", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-06T12:00:00Z"));
+    try {
+      const page = z.encode(DailyArchiveManifestSchema, dailyManifest);
+      const first = page.recordings[0]!;
+      const last = page.recordings[1]!;
+      const firstEntry = {
+        key: "index.first.json",
+        bucket: "12:00",
+        startedAt: first.startedAt,
+        endedAt: first.endedAt,
+      };
+      const tail = {
+        key: "index.tail.json",
+        bucket: "23:55",
+        startedAt: last.startedAt,
+        endedAt: last.endedAt,
+      };
+      const head = {
+        version: 2,
+        stream: page.stream,
+        date: page.date,
+        startedAt: first.startedAt,
+        endedAt: last.endedAt,
+        pages: "pages.json",
+        tail,
+      };
+      const root = {
+        version: 2,
+        stream: page.stream,
+        days: {
+          [page.date]: { key: "head.json", startedAt: head.startedAt, endedAt: head.endedAt },
+        },
+      };
+      const bodies = new Map([
+        ["archive.json", JSON.stringify(root)],
+        ["head.json", JSON.stringify(head)],
+        [
+          "pages.json",
+          JSON.stringify({ version: 2, stream: page.stream, date: page.date, pages: [firstEntry] }),
+        ],
+        ["index.first.json", JSON.stringify({ ...page, recordings: [first] })],
+        ["index.tail.json", JSON.stringify({ ...page, recordings: [last] })],
+      ]);
+      const requests: string[] = [];
+      const revisions = new Map<string, string>();
+      const storage = new HttpArchiveStorage({
+        baseUrl: "https://archive.test",
+        fetch: async (input, init) => {
+          const key = String(input).split("/").at(-1)!;
+          requests.push(key);
+          const mutable = key === "archive.json" || key === "head.json";
+          const headers = {
+            "cache-control": key === "archive.json" ? "max-age=300" : mutable ? "max-age=5" : "max-age=31536000, immutable",
+            date: new Date().toUTCString(),
+            age: "0",
+            etag: revisions.get(key) ?? '"one"',
+          };
+          const unchanged = new Headers(init?.headers).get("if-none-match") === headers.etag;
+          return new Response(unchanged ? null : bodies.get(key), {
+            status: unchanged ? 304 : 200,
+            headers,
+          });
+        },
+      });
+      const client = new ArchiveManifestClient(storage);
+      const location = await client.locate(first.startedAt);
+      expect(location.recording?.id).toBe(first.id);
+      expect(requests).not.toContain("index.tail.json");
+      vi.advanceTimersByTime(5_000);
+      await client.refresh();
+      expect((await client.locate(first.startedAt)).recording).toBe(location.recording);
+      expect(requests.filter((key) => key === "index.first.json")).toHaveLength(1);
+      expect(requests.filter((key) => key === "pages.json")).toHaveLength(1);
+      expect(requests.filter((key) => key === "head.json")).toHaveLength(2);
+      expect(requests.filter((key) => key === "archive.json")).toHaveLength(1);
+      await client.locate(last.startedAt);
+      expect(requests.filter((key) => key === "index.tail.json")).toHaveLength(1);
+      bodies.set("head.json", JSON.stringify({ ...head, endedAt: "2026-08-14T01:00:00.000Z" }));
+      revisions.set("head.json", '"growth"');
+      vi.advanceTimersByTime(5_000);
+      expect((await client.describe()).coverage?.endedAt).toBe("2026-08-14T01:00:00.000Z");
+      expect(requests.filter((key) => key === "archive.json")).toHaveLength(1);
+      // Removing a page publishes a new directory; cached bytes no longer confer coverage.
+      bodies.set(
+        "pages.revised.json",
+        JSON.stringify({ version: 2, stream: page.stream, date: page.date, pages: [] }),
+      );
+      bodies.set("head.json", JSON.stringify({ ...head, pages: "pages.revised.json" }));
+      revisions.set("head.json", '"two"');
+      vi.advanceTimersByTime(5_000);
+      await client.refresh();
+      const removed = await client.locate(first.startedAt);
+      expect(removed.span.kind).toBe("gap");
+      expect(removed.span.endedAt).toBe(last.startedAt);
+      expect(requests.filter((key) => key === "index.first.json")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("discovers midnight heads without rereading a fresh root and bounds missing-head probes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-13T23:59:59Z"));
+    try {
+      const oldHead = {
+        version: 2, stream: "camera", date: "2026-08-13",
+        startedAt: "2026-08-13T12:00:00Z", endedAt: "2026-08-14T00:00:00Z",
+        pages: "pages.old.json",
+        tail: { key: "tail.old.json", bucket: "23:55", startedAt: "2026-08-13T23:55:00Z", endedAt: "2026-08-14T00:00:00Z" },
+      };
+      const root = {
+        version: 2, stream: "camera", headPrefix: "archive/",
+        days: { "2026-08-13": { key: "old-head.json", startedAt: oldHead.startedAt, endedAt: oldHead.endedAt } },
+      };
+      const bodies = new Map([
+        ["archive.json", JSON.stringify(root)], ["old-head.json", JSON.stringify(oldHead)],
+      ]);
+      const requests: string[] = [];
+      const storage = new HttpArchiveStorage({ baseUrl: "https://archive.test", fetch: async input => {
+        const key = new URL(String(input)).pathname.slice(1);
+        requests.push(key);
+        const body = bodies.get(key);
+        return new Response(body ?? "Not indexed", { status: body ? 200 : 404, headers: {
+          "cache-control": key === "archive.json" ? "max-age=300" : "max-age=5",
+          date: new Date().toUTCString(), age: "0",
+        } });
+      } });
+      const client = new ArchiveManifestClient(storage);
+      await client.describe();
+      vi.advanceTimersByTime(2000);
+      await client.describe();
+      await client.describe();
+      expect(requests.filter(key => key === "archive/2026-08-14/head.json")).toHaveLength(1);
+      bodies.set("archive/2026-08-14/head.json", JSON.stringify({ ...oldHead,
+        date: "2026-08-14", startedAt: "2026-08-14T00:00:00Z", endedAt: "2026-08-14T00:00:30Z",
+      }));
+      vi.advanceTimersByTime(5000);
+      await client.refresh();
+      expect((await client.describe()).coverage?.endedAt).toBe("2026-08-14T00:00:30Z");
+      expect((await client.load()).key).toBe("archive/2026-08-14/head.json");
+      expect(requests.filter(key => key === "archive.json")).toHaveLength(1);
+      expect(requests.filter(key => key === "archive/2026-08-14/head.json")).toHaveLength(2);
+    } finally { vi.useRealTimers(); }
+  });
+
+});
+
+
+describe("repaired media ranges", () => {
+  it.each(["destroy", "abort"] as const)("%s respects hls.js callback-driven cleanup", (operation) => {
+    // Use the real default loader's lifecycle without starting browser networking.
+    vi.stubGlobal("self", globalThis);
+    try {
+      const Loader = createPieceLoader(new Map());
+      const loader = new Loader(Hls.DefaultConfig);
+      const onAbort = vi.fn(() => loader.destroy());
+      Object.assign(loader, { callbacks: { onAbort } });
+
+      expect(() => loader[operation]()).not.toThrow();
+      expect(onAbort).toHaveBeenCalledTimes(operation === "abort" ? 1 : 0);
+      expect(() => loader.destroy()).not.toThrow();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("compiles mixed sources as one independently playable segment", async () => {
+    const {storage,client}=createClient();
+    const recording=storage.daily.recordings[0]!;
+    recording.segments[0]!.pieces=[
+      {source:"repairs/start.mp4",byteOffset:0,byteLength:100},
+      {source:recording.source,byteOffset:1142,byteLength:489101},
+    ];
+    storage.daily.version=3;
+    const playlist=await new PlaylistFactory(client).compile({at:"2026-08-13T12:00:02.000Z",window:{before:0,after:1}});
+    const entries=[...playlist.mediaSegments!.entries()];
+    expect(entries).toHaveLength(1);
+    expect(entries[0]![1]).toEqual([
+      {url:"https://media.test/repairs/start.mp4",byteOffset:0,byteLength:100},
+      {url:`https://media.test/${recording.source}`,byteOffset:1142,byteLength:489101},
+    ]);
+    expect(playlist.text).toContain(entries[0]![0]);
+    expect(playlist.initial).toBe(2);
+    expect(playlist.utcAt(3)).toBe("2026-08-13T12:00:03.000Z");
+    client.dispose();
+  });
+
+  it("assembles exact HTTP ranges and rejects ignored ranges and aborted work", async () => {
+    const bytes=Buffer.from("0123456789abcdef");
+    const server=createServer((request,response)=>{
+      if(request.url==="/ignored"){response.writeHead(200);response.end(bytes);return;}
+      const match=/bytes=(\d+)-(\d+)/.exec(request.headers.range??"");
+      const start=Number(match?.[1]);const end=Number(match?.[2]);
+      response.writeHead(206,{"Content-Range":`bytes ${start}-${end}/${bytes.length}`});
+      response.end(bytes.subarray(start,end+1));
+    });
+    await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
+    const address=z.object({port:z.number()}).parse(server.address());
+    const url=`http://127.0.0.1:${address.port}`;
+    try {
+      const result=await assemblePieces([{url,byteOffset:8,byteLength:4},{url,byteOffset:0,byteLength:3}],new AbortController().signal);
+      expect(new TextDecoder().decode(result)).toBe("89ab012");
+      await expect(assemblePieces([{url:`${url}/ignored`,byteOffset:0,byteLength:3}],new AbortController().signal)).rejects.toThrow("HTTP 200");
+      const controller=new AbortController();controller.abort();
+      await expect(assemblePieces([{url,byteOffset:0,byteLength:3}],controller.signal)).rejects.toThrow();
+    } finally {server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
   });
 });

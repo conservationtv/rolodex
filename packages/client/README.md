@@ -12,8 +12,8 @@ player interface you want to build.
 
 > **Pairs with the worker.** This library consumes the artifacts
 > produced by the Rolodex Rust worker (`crates/worker`): the stream
-> directory (`archive.json`), the daily manifests
-> (`archive/YYYY-MM-DD.json`), per-recording indexes, canonical init
+> directory (`archive.json`), daily heads
+> (`archive/YYYY-MM-DD/head.json`), immutable metadata pages, canonical init
 > segments, and thumbnail sprite sheets. Point it at a bucket the
 > worker has populated and everything below works; without those
 > artifacts there is nothing to play.
@@ -215,8 +215,8 @@ store.fit();            // fit the full archive (or fit(range))
 ```
 
 To pick up recordings the worker has finished since the page loaded,
-call `store.refresh()` periodically; it re-reads the manifests and
-updates the timeline in place.
+call `store.refresh()` periodically; it revalidates expired manifests and
+updates the timeline in place while retaining fresh immutable pages.
 
 ## Other controls
 
@@ -252,3 +252,102 @@ All public types are exported; `S3ArchiveStorage` can also be replaced
 with your own `ArchiveStorage` implementation (for example, one that
 resolves URLs through a signing service instead of embedding
 credentials in the page).
+
+### Paged archive format and refresh
+
+The client now requires version-2 stream discovery. This is a hard cutover: there
+is no conversion or automatic reindexing of version-1 history. The Rust worker
+starts a new discovery index when the next recording completes. Old recording
+objects remain stored, but are not included in the new index.
+
+`archive.json` contains small day entries. Each entry points to
+`archive/YYYY-MM-DD/head.json`, which references a content-addressed page
+directory and the current tail page. Recording metadata is partitioned by its
+UTC start into five-minute buckets. The newest bucket is the tail; its metadata
+uses the same immutable page format as sealed buckets. Page bodies retain the
+version-1 recording codec (including decimal nanoseconds and byte ranges).
+
+A new recording changes the tail hash, head and small discovery object. The
+sealed-page directory changes only on rollover or a correction to a sealed
+page. The writer publishes referenced objects before conditionally committing
+the head, retries competing writes and rereads the head before updating discovery.
+Late arrivals update their UTC partition. Immutable objects from failed writes
+or superseded revisions can remain unreferenced; garbage collection is a
+separate maintenance concern. Recording identity and its UTC partition must be
+stable across replacement uploads.
+
+`locate()` and thumbnail lookup load only the page covering the UTC target (or
+the next page for a gap). `getTimeline(range)` loads the pages intersecting the
+requested range, preserving full recording metadata for playlist construction.
+A whole-history timeline therefore still needs all its pages on a cold load.
+Parsed caches are bounded; refreshing does not clear sealed pages.
+
+`HttpArchiveStorage`, now exported directly by Rolodex, and `S3ArchiveStorage`
+share `ArchiveDocumentCache`. Both use response freshness and ETag revalidation.
+`refresh()` checks expired discovery data; it does not bypass a fresh HTTP TTL.
+`maxAge` is a fallback for storage without response freshness, not an override
+of server directives. `no-store` responses are not retained by the document
+cache; `no-cache` responses require validation on every access. `Age`, `Date`
+and request transit time reduce the remaining `max-age`. A `304` retains the
+parsed document while updating its freshness. `s-maxage` applies only to shared
+caches, not the client cache.
+
+| Object | Cache-Control |
+| --- | --- |
+| Archive root and heads older than two UTC days | `public, max-age=300, must-revalidate` |
+| Current and previous UTC day heads | `public, max-age=5, must-revalidate` |
+| Content-addressed directory, page and init | `public, max-age=31536000, immutable` |
+| Per-recording generated index and thumbnail | `public, max-age=31536000, immutable` |
+
+Generated thumbnails and per-recording indexes retain their existing filenames. Reprocessing can overwrite these objects; existing cached copies may remain stale for their cache lifetime. This is an accepted trade-off.
+
+The Rust writer sets R2 HTTP metadata on PUT. `Age` is not upload metadata:
+it measures response cache residence, not object age. HTTP gateways must emit
+`Date`, report the response's `Age`, preserve ETag and expose those headers to
+cross-origin clients. The Rewind demo reads through an R2 custom domain, where Cloudflare supplies `Date` and cache-residence `Age`; its CORS policy permits `If-None-Match`.
+
+Custom storage implementations can expose `getArchiveObject(key, options)` and
+compose `ArchiveDocumentCache` with their own `DocumentLoader`, preserving the
+same freshness contract without depending on HTTP or S3 authentication code.
+
+### Renewing temporary credentials
+
+`ArchiveSource.auth` also accepts an `ArchiveCredentialProvider`:
+
+```ts
+const storage = new S3ArchiveStorage({
+  bucket, root: '', manifest, region: 'auto', endpoint,
+  auth: { get: ({ signal } = {}) => fetchViewerCredentials(signal) }
+});
+```
+
+Return `TemporaryCredentialsAuthentication` including `expiresAt`. The storage
+shares one pending credential acquisition across signing and document reads,
+renews up to two minutes before expiry, and preserves manifest caches across
+renewal. A provider returning expired credentials or no expiry is rejected.
+Call `storage.dispose()` when its owning session ends; this aborts credential
+acquisition and closes the S3 client. Static authentication remains supported.
+
+### Discovery versus live coverage
+
+`archive.json` is a day directory, cached for five minutes. The indexer writes it
+only when registering a day (or changing its key), not for each recording. Its
+existing per-day `startedAt`/`endedAt` fields are discovery-time hints retained in
+the v2 wire format; current coverage comes from each day's head. Consumers must
+use `describe()` rather than reading those root bounds as the live edge.
+
+The root's `headPrefix` identifies deterministic `YYYY-MM-DD/head.json` paths.
+The client probes today's head when that date is absent from cached discovery,
+so UTC midnight and delayed first recordings do not wait for root expiry. A
+missing current head is retried at most every five seconds. Registered day paths
+still come from the directory; newly probed heads must match the stream and date.
+`load()` includes newly discovered days, and live coverage can grow without any
+root read or root rewrite.
+
+Current and previous UTC day heads have five-second freshness. Older heads use
+five-minute freshness when published by the worker; the demo gateway also ages
+previously published heads into this policy. Late historical edits therefore
+remain discoverable. Hashed pages and page directories remain immutable.
+Refresh and thumbnail lookups respect Cache-Control, Date and Age independently
+for each resource. Root changes such as historical backfills appear within its
+five-minute discovery interval.

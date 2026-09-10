@@ -1,11 +1,11 @@
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use rolodex_core::RecordingMetadata;
 use serde::{Deserialize, Serialize};
 
-pub(crate) const ARCHIVE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const ARCHIVE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -13,19 +13,25 @@ pub(crate) struct StreamArchive {
     pub(crate) version: u32,
     pub(crate) stream: String,
     pub(crate) days: BTreeMap<String, ArchiveDay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) head_prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) retention_seconds: Option<u64>,
 }
 
 impl StreamArchive {
     pub(crate) fn new(stream: String) -> Self {
         Self {
-            version: ARCHIVE_SCHEMA_VERSION,
+            version: 2,
             stream,
             days: BTreeMap::new(),
+            head_prefix: None,
+            retention_seconds: None,
         }
     }
 
     pub(crate) fn validate(&self, stream: &str) -> Result<(), String> {
-        if self.version != ARCHIVE_SCHEMA_VERSION {
+        if self.version != 2 {
             return Err(format!(
                 "archive manifest schema {} is unsupported",
                 self.version
@@ -42,10 +48,6 @@ impl StreamArchive {
 
     pub(crate) fn merge_day(&mut self, date: String, day: ArchiveDay) {
         self.days.insert(date, day);
-    }
-
-    pub(crate) fn retain_day_keys(&mut self, existing: &HashSet<String>) {
-        self.days.retain(|_, day| existing.contains(&day.key));
     }
 }
 
@@ -77,7 +79,7 @@ impl DailyArchive {
     }
 
     pub(crate) fn validate(&self, stream: &str, date: &str) -> Result<(), String> {
-        if self.version != ARCHIVE_SCHEMA_VERSION {
+        if self.version != 1 && self.version != ARCHIVE_SCHEMA_VERSION {
             return Err(format!(
                 "daily archive schema {} is unsupported",
                 self.version
@@ -103,6 +105,7 @@ impl DailyArchive {
                 self.date
             ));
         }
+        self.version = ARCHIVE_SCHEMA_VERSION;
         self.recordings
             .retain(|existing| existing.id != recording.id);
         self.recordings.push(recording);
@@ -173,6 +176,7 @@ impl ArchiveRecording {
         for part in &metadata.parts {
             if part.video_starts_with_sync {
                 segments.push(ArchiveSegment {
+                    pieces: Vec::new(),
                     presentation_start_ns: part.presentation_start_ns,
                     byte_offset: part.offset,
                     byte_length: part.length,
@@ -197,6 +201,9 @@ impl ArchiveRecording {
                 .byte_length
                 .checked_add(part.length)
                 .ok_or_else(|| "archive segment length overflows u64".to_string())?;
+        }
+        if !metadata.playback_parts.is_empty() {
+            segments = playback_segments(metadata)?;
         }
         if segments.is_empty() {
             return Err("recording has no random-access segments".into());
@@ -237,11 +244,60 @@ impl ArchiveRecording {
     }
 }
 
+fn playback_segments(metadata: &RecordingMetadata) -> Result<Vec<ArchiveSegment>, String> {
+    let mut segments: Vec<ArchiveSegment> = Vec::new();
+    for part in &metadata.playback_parts {
+        if part.starts_with_sync {
+            segments.push(ArchiveSegment {
+                presentation_start_ns: part.presentation_start_ns,
+                byte_offset: 0,
+                byte_length: 0,
+                pieces: Vec::new(),
+            });
+        }
+        let segment = segments
+            .last_mut()
+            .ok_or("playback does not begin with a keyframe")?;
+        segment.byte_length = segment
+            .byte_length
+            .checked_add(part.length)
+            .ok_or("playback size overflow")?;
+        if let Some(previous) = segment.pieces.last_mut() {
+            if previous.source == part.source
+                && previous.byte_offset + previous.byte_length == part.offset
+            {
+                previous.byte_length += part.length;
+                continue;
+            }
+        }
+        segment.pieces.push(ArchivePiece {
+            source: part.source.clone(),
+            byte_offset: part.offset,
+            byte_length: part.length,
+        });
+    }
+    Ok(segments)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+/// Location discriminant: nonempty `pieces` is authoritative and must be read in
+/// order; `byte_offset` is then zero and `byte_length` is the sum of piece lengths.
+/// Empty/omitted `pieces` means the segment is one range in ArchiveRecording.source,
+/// addressed by `byte_offset` and `byte_length`. Never read that range when pieces exist.
 pub(crate) struct ArchiveSegment {
     #[serde(with = "rolodex_core::decimal_string::scalar")]
     pub(crate) presentation_start_ns: i64,
+    pub(crate) byte_offset: u64,
+    pub(crate) byte_length: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) pieces: Vec<ArchivePiece>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ArchivePiece {
+    pub(crate) source: String,
     pub(crate) byte_offset: u64,
     pub(crate) byte_length: u64,
 }
@@ -268,6 +324,91 @@ pub(crate) struct ThumbnailCell {
     pub(crate) height: u32,
 }
 
+/// Stable five-minute UTC partitions bound the tail independently of recording duration.
+/// Late arrivals replace one addressed page, never the whole day's recording index.
+pub(crate) fn recording_bucket(recording: &ArchiveRecording) -> Result<String, String> {
+    let start = &recording.started_at;
+    let minute: u32 = start
+        .get(14..16)
+        .ok_or("invalid recording minute")?
+        .parse()
+        .map_err(|_| "invalid recording minute")?;
+    if minute > 59 {
+        return Err("invalid recording minute".into());
+    }
+    Ok(format!(
+        "{}{:02}",
+        start.get(..14).ok_or("invalid recording timestamp")?,
+        minute / 5 * 5
+    ))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ArchivePageEntry {
+    pub(crate) bucket: String,
+    #[serde(flatten)]
+    pub(crate) coverage: ArchiveDay,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ArchivePageDirectory {
+    pub(crate) version: u32,
+    pub(crate) stream: String,
+    pub(crate) date: String,
+    pub(crate) pages: Vec<ArchivePageEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ArchiveHead {
+    pub(crate) version: u32,
+    pub(crate) stream: String,
+    pub(crate) date: String,
+    pub(crate) started_at: String,
+    pub(crate) ended_at: String,
+    pub(crate) pages: String,
+    pub(crate) tail: ArchivePageEntry,
+}
+
+impl ArchiveHead {
+    pub(crate) fn validate(&self, stream: &str, date: &str) -> Result<(), String> {
+        if self.version != 2 || self.stream != stream || self.date != date {
+            return Err("archive head identity or version mismatch".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn from_pages(
+        directory: &ArchivePageDirectory,
+        pages: String,
+        tail: ArchivePageEntry,
+    ) -> Self {
+        let mut started_at = tail.coverage.started_at.clone();
+        let mut ended_at = tail.coverage.ended_at.clone();
+        for page in &directory.pages {
+            started_at = started_at.min(page.coverage.started_at.clone());
+            ended_at = ended_at.max(page.coverage.ended_at.clone());
+        }
+        Self {
+            version: 2,
+            stream: directory.stream.clone(),
+            date: directory.date.clone(),
+            started_at,
+            ended_at,
+            pages,
+            tail,
+        }
+    }
+    pub(crate) fn coverage(&self, key: String) -> ArchiveDay {
+        ArchiveDay {
+            key,
+            started_at: self.started_at.clone(),
+            ended_at: self.ended_at.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 fn utc_date(unix_ns: &str) -> Result<String, String> {
     const NS_PER_DAY: i128 = 86_400_000_000_000;
@@ -277,7 +418,7 @@ fn utc_date(unix_ns: &str) -> Result<String, String> {
     Ok(format!("{year:04}-{month:02}-{day:02}"))
 }
 
-fn utc_timestamp(unix_ns: i128) -> Result<String, String> {
+pub(crate) fn utc_timestamp(unix_ns: i128) -> Result<String, String> {
     const MS_PER_DAY: i128 = 86_400_000;
     let unix_ms = unix_ns.div_euclid(1_000_000);
     let days = unix_ms.div_euclid(MS_PER_DAY);
@@ -341,6 +482,7 @@ mod tests {
     fn metadata(object_key: &str, start_utc_ns: &str) -> RecordingMetadata {
         let start_utc_ns = start_utc_ns.parse::<i64>().unwrap();
         RecordingMetadata {
+            playback_parts: Vec::new(),
             schema_version: 3,
             processor_version: "5".into(),
             source: MetadataSource {
@@ -466,11 +608,13 @@ mod tests {
             value.segments,
             vec![
                 ArchiveSegment {
+                    pieces: Vec::new(),
                     presentation_start_ns: 0,
                     byte_offset: 1_000,
                     byte_length: 250,
                 },
                 ArchiveSegment {
+                    pieces: Vec::new(),
                     presentation_start_ns: 2_000_000_000,
                     byte_offset: 1_250,
                     byte_length: 200,
@@ -531,32 +675,6 @@ mod tests {
     }
 
     #[test]
-    fn stream_archive_prunes_missing_day_objects() {
-        let mut archive = StreamArchive::new("h265/cam".into());
-        archive.merge_day(
-            "2026-08-12".into(),
-            ArchiveDay {
-                key: "archive/2026-08-12.json".into(),
-                started_at: "2026-08-12T00:00:00.000Z".into(),
-                ended_at: "2026-08-13T00:05:00.000Z".into(),
-            },
-        );
-        let retained = ArchiveDay {
-            key: "archive/2026-08-13.json".into(),
-            started_at: "2026-08-13T00:00:00.000Z".into(),
-            ended_at: "2026-08-14T00:00:00.000Z".into(),
-        };
-        archive.merge_day("2026-08-13".into(), retained.clone());
-
-        archive.retain_day_keys(&HashSet::from(["archive/2026-08-13.json".into()]));
-
-        assert_eq!(
-            archive.days,
-            BTreeMap::from([("2026-08-13".into(), retained)])
-        );
-    }
-
-    #[test]
     fn serializes_the_compact_browser_contract() {
         let mut archive = StreamArchive::new("h265/cam".into());
         archive.merge_day(
@@ -570,7 +688,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(archive).unwrap(),
             serde_json::json!({
-                "version": 1,
+                "version": 2,
                 "stream": "h265/cam",
                 "days": {
                     "2026-08-13": {
@@ -616,5 +734,47 @@ mod tests {
         let encoded = serde_json::to_vec(&recording).unwrap();
         let decoded: ArchiveRecording = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded, recording);
+    }
+    #[test]
+    fn pages_use_five_minute_partitions_and_heads_cover_gaps_and_cross_midnight() {
+        let mut recording = ArchiveRecording::from_metadata(
+            &metadata("recordings/cam/one.mp4", "1786622400000000000"),
+            "init/abc.mp4".into(),
+            None,
+        )
+        .unwrap();
+        recording.started_at = "2026-08-13T23:59:59.999Z".into();
+        assert_eq!(recording_bucket(&recording).unwrap(), "2026-08-13T23:55");
+        let entry = ArchivePageEntry {
+            bucket: "2026-08-13T12:00".into(),
+            coverage: ArchiveDay {
+                key: "index.early.json".into(),
+                started_at: "2026-08-13T12:00:00.000Z".into(),
+                ended_at: "2026-08-13T12:10:00.000Z".into(),
+            },
+        };
+        let directory = ArchivePageDirectory {
+            version: 2,
+            stream: "cam".into(),
+            date: "2026-08-13".into(),
+            pages: vec![entry],
+        };
+        let tail = ArchivePageEntry {
+            bucket: "2026-08-13T23:55".into(),
+            coverage: ArchiveDay {
+                key: "index.tail.json".into(),
+                started_at: "2026-08-13T23:59:59.999Z".into(),
+                ended_at: "2026-08-14T00:00:30.000Z".into(),
+            },
+        };
+        let head = ArchiveHead::from_pages(&directory, "pages.hash.json".into(), tail);
+        assert_eq!(head.started_at, "2026-08-13T12:00:00.000Z");
+        assert_eq!(head.ended_at, "2026-08-14T00:00:30.000Z");
+        head.validate("cam", "2026-08-13").unwrap();
+        assert!(head.validate("other", "2026-08-13").is_err());
+        let wire = serde_json::to_value(&head).unwrap();
+        assert_eq!(wire["tail"]["key"], "index.tail.json");
+        assert!(wire["tail"].get("coverage").is_none());
+        assert_eq!(serde_json::from_value::<ArchiveHead>(wire).unwrap(), head);
     }
 }

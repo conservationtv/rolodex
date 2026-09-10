@@ -21,9 +21,6 @@ The index and canonical HLS init allow a later playlist compiler to expose the
 unchanged source MP4 media as `EXT-X-BYTERANGE` segments. Video bytes remain on
 the direct R2-to-browser path.
 
-The detailed design and live status are in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
-and [PROGRESS.md](PROGRESS.md).
-
 ## What is implemented
 
 - Checked, bounded parsing for the required `moov`/`moof` hierarchy,
@@ -212,5 +209,49 @@ Synthetic AVC Baseline/Main/High and HEVC Main/Main10 fixtures pass locally and
 in Cloudflare staging, actual MediaMTX recorder smoke files pass, and both
 optimized Worker packages build below 1 MiB. Production readiness still
 requires representative recordings from the actual camera fleet, percentile
-load evidence, and production rollout approval. Those items are tracked
-explicitly in `PROGRESS.md`; they are not silently treated as complete.
+load evidence, and production rollout approval.
+
+## Bounded playback repairs
+
+`process_recording_with_repairs` accepts a `RepairSink` and optionally repairs
+oversized independently seekable ranges in single-track H.264 recordings. It
+splits selected fragments at existing keyframes, targeting 6 seconds or 4 MB per
+range without decoding or changing encoded video samples. Each source fragment
+is bounded to 4 MiB, and repair reads share the processing read budget. Layouts
+that cannot be repaired within those bounds retain their original playback path.
+The normal `process_recording` API remains available without repairs.
+
+Original parts remain in recording metadata for thumbnail and clip consumers;
+optional `playback_parts` describe committed immutable repair objects. Processor
+version 7 publishes daily page version 3 with segment `pieces` identifying byte
+ranges in original and repair objects. The updated client assembles these ranges
+with bounded concurrency before appending an independently decodable HLS segment.
+Version 1 pages remain readable. Deploy the updated client with the worker.
+
+With retention enabled, publication prunes expired manifest entries using page
+coverage and only reads pages crossing the cutoff. Object deletion belongs to
+bucket lifecycle policy, configured by the application; the worker does not run
+a scheduled deletion task. Lifecycle rules must cover the recording, repair and
+thumbnail prefixes and allow a playback lease grace period beyond the visible
+retention window. Shared initialization objects must remain available.
+
+### Archive object reclamation
+
+Archive retention prunes references, not R2 objects. Superseded content-addressed
+`index.*.json` and `pages.*.json` objects, repair MP4s from interrupted or losing
+publications, and repair MP4s for expired recordings can all become unreachable.
+No garbage collector is currently installed by this repository. The intended
+cleanup is an external reachability sweep: trace retained roots, daily heads,
+directories, recording pages and indexes, then delete only unreferenced objects
+after a grace period longer than publication retries and client cache lifetimes.
+The sweep must protect objects created during its scan and recheck mutable roots
+before deletion. An age-only R2 lifecycle rule on shared page or repair prefixes
+is unsafe because older objects may still be referenced. Until that sweep is
+implemented and scheduled, provision for orphan growth; retention alone does not
+bound storage use.
+
+Daily heads carry the newest partition directly as a tail reference. Appends to
+that partition rewrite the head but reuse the immutable directory of older
+partitions. Rollover, late writes to older partitions, and pruning rewrite the
+directory only when its entries change. All referenced immutable objects are
+written before the head's conditional commit; losing writers reread and merge.

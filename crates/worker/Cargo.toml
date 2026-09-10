@@ -17,6 +17,7 @@ codec-h265 = ["rolodex-core/codec-h265"]
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 rolodex-core = { path = "../rolodex-core", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

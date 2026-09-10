@@ -1,3 +1,4 @@
+import { createPieceLoader } from "./media-pieces.js";
 import Hls, { type ErrorData } from "hls.js";
 
 import { GapClock } from "./gap-clock.js";
@@ -22,9 +23,13 @@ import {
 
 export interface PlaybackState {
   playing: boolean;
+  /** Requested playback, retained through media loading and gap crossings. */
+  requested?: boolean;
   rate: number;
   mediaTime: number;
   bufferedSeconds: number;
+  /** True while the media element is waiting for enough data to advance. */
+  buffering?: boolean;
 }
 
 export interface ViewportState {
@@ -51,6 +56,8 @@ export interface ArchivePlayerSnapshotBase {
   viewport: ViewportState;
   playhead?: ISODateString;
   hover?: HoverState;
+  refreshing?: boolean;
+  warning?: Error;
 }
 
 /** Fields that exist once the stream manifest has loaded. */
@@ -139,6 +146,8 @@ export function carryBase(snapshot: ArchivePlayerSnapshot): ArchivePlayerSnapsho
     revision: snapshot.revision,
     playback: snapshot.playback,
     viewport: snapshot.viewport,
+    refreshing: snapshot.refreshing,
+    warning: snapshot.warning,
   };
   if (snapshot.playhead !== undefined) base.playhead = snapshot.playhead;
   if (snapshot.hover !== undefined) base.hover = snapshot.hover;
@@ -220,7 +229,7 @@ export class ArchivePlayerStore {
       revision: 0,
       phase: "idle",
       playhead: options.initial.playhead,
-      playback: { playing: false, rate: 1, mediaTime: 0, bufferedSeconds: 0 },
+      playback: { playing: false, requested: false, rate: 1, mediaTime: 0, bufferedSeconds: 0 },
       viewport: {
         startedAt: options.initial.viewport.startedAt,
         endedAt: options.initial.viewport.endedAt,
@@ -270,7 +279,7 @@ export class ArchivePlayerStore {
   attach(element: HTMLMediaElement): () => void {
     this.detachElement?.();
     this.element = element;
-    element.playbackRate = this.snapshot.playback.rate;
+    applyMediaRate(element, this.snapshot.playback.rate);
 
     const onTimeUpdate = (): void => this.syncFromElement(element);
     const onPlay = (): void => {
@@ -282,14 +291,16 @@ export class ArchivePlayerStore {
       });
     };
     const onPause = (): void => this.mutate((snapshot) => {
-      const playback = { ...snapshot.playback, playing: false };
+      const playback = { ...snapshot.playback, playing: false, buffering: false };
       if (snapshot.phase === "playing") return { ...snapshot, phase: "paused", playback };
       return { ...snapshot, playback };
     });
-    const onRateChange = (): void => this.mutate((snapshot) => ({
-      ...snapshot,
-      playback: { ...snapshot.playback, rate: element.playbackRate },
-    }));
+    const onRateChange = (): void => {
+      const rate = element.playbackRate;
+      if (element.defaultPlaybackRate !== rate) element.defaultPlaybackRate = rate;
+      if (this.snapshot.playback.rate === rate) return;
+      this.mutate((snapshot) => ({ ...snapshot, playback: { ...snapshot.playback, rate } }));
+    };
     const onError = (): void => {
       const mediaError = element.error;
       const cause = new Error(mediaError?.message || `Media error ${mediaError?.code ?? "unknown"}`);
@@ -297,6 +308,12 @@ export class ArchivePlayerStore {
         if (!recovered) this.fail(cause);
       });
     };
+    const onWaiting = (): void => this.mutate((snapshot) => ({
+      ...snapshot, playback: { ...snapshot.playback, buffering: true },
+    }));
+    const onPlaying = (): void => this.mutate((snapshot) => ({
+      ...snapshot, playback: { ...snapshot.playback, buffering: false },
+    }));
     const onEnded = (): void => {
       void this.handleEnded();
     };
@@ -308,11 +325,15 @@ export class ArchivePlayerStore {
     element.addEventListener("ratechange", onRateChange);
     element.addEventListener("error", onError);
     element.addEventListener("ended", onEnded);
+    element.addEventListener("waiting", onWaiting);
+    element.addEventListener("playing", onPlaying);
+    element.addEventListener("canplay", onPlaying);
 
     /* Late attach: bind the playlist that an earlier seek already compiled. */
     if (this.lease) this.bindLease(element, this.lease);
 
     const detach = (): void => {
+      if (this.detachElement !== detach) return;
       this.destroyEngine();
       element.removeEventListener("timeupdate", onTimeUpdate);
       element.removeEventListener("progress", onTimeUpdate);
@@ -321,6 +342,9 @@ export class ArchivePlayerStore {
       element.removeEventListener("ratechange", onRateChange);
       element.removeEventListener("error", onError);
       element.removeEventListener("ended", onEnded);
+      element.removeEventListener("waiting", onWaiting);
+      element.removeEventListener("playing", onPlaying);
+      element.removeEventListener("canplay", onPlaying);
       if (this.element === element) this.element = undefined;
       if (this.detachElement === detach) this.detachElement = undefined;
     };
@@ -350,6 +374,7 @@ export class ArchivePlayerStore {
       const { stream } = await this.manifests.describe(requestOptions);
       if (token !== this.seekToken) return;
       const location = await this.manifests.locate(to, requestOptions);
+      to = location.utc;
       if (token !== this.seekToken) return;
       if (location.span.kind === "gap") {
         const autoplay = options?.autoplay ?? this.playbackIntent;
@@ -470,7 +495,7 @@ export class ArchivePlayerStore {
     } catch {
       this.playbackIntent = false;
       this.mutate((snapshot) => {
-        const playback = { ...snapshot.playback, playing: false };
+        const playback = { ...snapshot.playback, playing: false, buffering: false };
         if (snapshot.phase === "playing") return { ...snapshot, phase: "paused", playback };
         return { ...snapshot, playback };
       });
@@ -489,7 +514,7 @@ export class ArchivePlayerStore {
     }
     this.element?.pause();
     this.mutate((snapshot) => {
-      const playback = { ...snapshot.playback, playing: false };
+      const playback = { ...snapshot.playback, playing: false, buffering: false };
       if (snapshot.phase === "playing") return { ...snapshot, phase: "paused", playback };
       return { ...snapshot, playback };
     });
@@ -503,7 +528,7 @@ export class ArchivePlayerStore {
   setPlaybackRate(rate: number): void {
     const bounded = Math.min(4, Math.max(0.25, rate));
     this.gapClock.setRate(bounded);
-    if (this.element) this.element.playbackRate = bounded;
+    if (this.element) applyMediaRate(this.element, bounded);
     this.mutate((snapshot) => ({
       ...snapshot,
       playback: { ...snapshot.playback, rate: bounded },
@@ -583,24 +608,43 @@ export class ArchivePlayerStore {
     this.mutate(({ hover: _hover, ...snapshot }) => snapshot);
   }
 
+  /** Refresh metadata without replacing the current media lease or playback intent. */
   async refresh(): Promise<void> {
+    this.mutate((snapshot) => ({ ...snapshot, refreshing: true, warning: undefined }));
     try {
       await this.manifests.refresh();
-      const range = this.viewportRange();
+      const { coverage } = await this.manifests.describe();
+      const range = this.refreshedRange(coverage);
       const timeline = range ? await this.manifests.getTimeline(range) : undefined;
       const playhead = this.snapshot.playhead;
       const location = playhead ? await this.manifests.locate(playhead) : undefined;
       this.mutate((snapshot) => {
-        /* Pre-manifest phases have nowhere to store timeline data. */
         if (snapshot.phase === "idle" || snapshot.phase === "loading-manifest") return snapshot;
-        const next = { ...snapshot };
-        if (timeline) next.timeline = timeline;
-        if (location) next.location = location;
+        const next = { ...snapshot, coverage, timeline,
+          viewport: range ?? snapshot.viewport, refreshing: false };
+        if (location && snapshot.playhead === playhead) next.location = location;
         return next;
       });
-    } catch (error) {
-      this.fail(error instanceof Error ? error : new Error(String(error)));
+    } catch (cause) {
+      const warning = cause instanceof Error ? cause : new Error(String(cause));
+      this.mutate((snapshot) => ({ ...snapshot, refreshing: false, warning }));
+      throw warning;
+    } finally {
+      this.mutate((snapshot) => ({ ...snapshot, refreshing: false }));
     }
+  }
+
+  /** A fitted viewport follows new coverage; a manually zoomed viewport stays pinned. */
+  private refreshedRange(coverage?: ISODateRange): ISODateRange | undefined {
+    if (!coverage) return undefined;
+    const viewport = this.viewportRange();
+    const previous = carryLoaded(this.snapshot)?.coverage;
+    const fitted = viewport?.startedAt === previous?.startedAt
+      && viewport?.endedAt === previous?.endedAt;
+    if (fitted || !viewport) return coverage;
+    const startedAt = viewport.startedAt < coverage.startedAt ? coverage.startedAt : viewport.startedAt;
+    const endedAt = viewport.endedAt > coverage.endedAt ? coverage.endedAt : viewport.endedAt;
+    return endedAt > startedAt ? { startedAt, endedAt } : coverage;
   }
 
   dispose(): void {
@@ -626,7 +670,7 @@ export class ArchivePlayerStore {
       this.fail(new Error("hls.js requires Media Source Extensions, which this environment does not provide"));
       return;
     }
-    const engine = new Hls({ startPosition: this.pendingMediaTime ?? lease.initial });
+    const engine = new Hls({ startPosition: this.pendingMediaTime ?? lease.initial, fLoader: createPieceLoader(lease.mediaSegments ?? new Map()) });
     this.engine = engine;
     engine.on(Hls.Events.ERROR, (_event, data: ErrorData) => {
       if (this.engine !== engine || !data.fatal) return;
@@ -642,7 +686,7 @@ export class ArchivePlayerStore {
     });
     engine.loadSource(lease.url);
     engine.attachMedia(element);
-    element.playbackRate = this.snapshot.playback.rate;
+    applyMediaRate(element, this.snapshot.playback.rate);
   }
 
   private destroyEngine(): void {
@@ -658,6 +702,11 @@ export class ArchivePlayerStore {
     autoplay: boolean,
   ): void {
     this.gapClock.stop();
+    if (utcNs(location.span.endedAt) <= utcNs(playhead)) {
+      this.playbackIntent = false;
+      this.fail(new Error("The archive gap has no forward boundary"));
+      return;
+    }
     this.playbackIntent = autoplay;
     this.element?.pause();
     this.destroyEngine();
@@ -677,6 +726,7 @@ export class ArchivePlayerStore {
           playing: false,
           mediaTime: 0,
           bufferedSeconds: 0,
+          buffering: false,
         },
       };
       if (loaded?.coverage !== undefined) next.coverage = loaded.coverage;
@@ -721,7 +771,7 @@ export class ArchivePlayerStore {
     if (!lease) {
       this.playbackIntent = false;
       this.mutate((snapshot) => {
-        const playback = { ...snapshot.playback, playing: false };
+        const playback = { ...snapshot.playback, playing: false, buffering: false };
         if (isMediaBound(snapshot)) return { ...snapshot, phase: "paused", playback };
         return { ...snapshot, playback };
       });
@@ -737,6 +787,7 @@ export class ArchivePlayerStore {
       && loaded.coverage !== undefined
       && utcNs(boundary) >= utcNs(loaded.coverage.endedAt)
     ) {
+      this.playbackIntent = false;
       this.mutate((snapshot) => {
         const next: PausedArchivePlayerSnapshot = {
           ...carryBase(snapshot),
@@ -816,8 +867,12 @@ export class ArchivePlayerStore {
   }
 
   private mutate(update: (previous: ArchivePlayerSnapshot) => ArchivePlayerSnapshot): void {
+    if (this.disposed) return;
     const previous = this.snapshot;
-    this.snapshot = { ...update(previous), revision: previous.revision + 1 };
+    const next = update(previous);
+    const playback = next.playback.requested === this.playbackIntent
+      ? next.playback : { ...next.playback, requested: this.playbackIntent };
+    this.snapshot = { ...next, playback, revision: previous.revision + 1 };
     for (const listener of this.listeners) listener();
   }
 
@@ -862,4 +917,11 @@ export class ArchivePlayerStore {
       return next;
     });
   }
+}
+
+/** Loading a new media resource resets playbackRate to defaultPlaybackRate. Keep both
+ * aligned so playlist renewal, gap transitions and hls.js detach preserve speed. */
+function applyMediaRate(element: HTMLMediaElement, rate: number): void {
+  if (element.defaultPlaybackRate !== rate) element.defaultPlaybackRate = rate;
+  if (element.playbackRate !== rate) element.playbackRate = rate;
 }
