@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use rolodex_core::RecordingMetadata;
+use rolodex_core::{RecordingMetadata, mp4::TrackKind};
 use serde::{Deserialize, Serialize};
 
 pub(crate) const ARCHIVE_SCHEMA_VERSION: u32 = 3;
@@ -167,9 +167,14 @@ impl ArchiveRecording {
             .as_ref()
             .ok_or_else(|| "recording metadata has no MediaMTX UTC start".to_string())?;
         let start_utc_ns = i128::from(*start_utc_ns);
-        let duration_ns = i128::from(recording.video_duration_ns);
+        // The recording's time base starts with its first sample, of any track, and the
+        // video's duration with the video's own: a recording whose audio begins ahead of
+        // its video ends that much later than its video is long.
+        let duration_ns = video_lead_in_ns(metadata)
+            .checked_add(recording.video_duration_ns)
+            .ok_or_else(|| "recording duration overflows u64 nanoseconds".to_string())?;
         let end_utc_ns = start_utc_ns
-            .checked_add(duration_ns)
+            .checked_add(i128::from(duration_ns))
             .ok_or_else(|| "recording UTC end overflows i128 nanoseconds".to_string())?;
 
         let mut segments: Vec<ArchiveSegment> = Vec::new();
@@ -184,9 +189,12 @@ impl ArchiveRecording {
                 continue;
             }
 
-            let current = segments
-                .last_mut()
-                .ok_or_else(|| "recording does not start with a random-access part".to_string())?;
+            // A part before the first keyframe, such as audio that begins ahead of the
+            // video, cannot be decoded from its own start: it belongs to no segment, and
+            // playback begins at the first keyframe.
+            let Some(current) = segments.last_mut() else {
+                continue;
+            };
             let expected_offset = current
                 .byte_offset
                 .checked_add(current.byte_length)
@@ -235,13 +243,30 @@ impl ArchiveRecording {
             id: metadata.source.object_key.clone(),
             started_at: utc_timestamp(start_utc_ns)?,
             ended_at: utc_timestamp_ceil(end_utc_ns)?,
-            duration_ns: recording.video_duration_ns,
+            duration_ns,
             source: metadata.source.object_key.clone(),
             init: init_key,
             segments,
             thumbnail,
         })
     }
+}
+
+/// How far into the recording's time base its video begins: nothing for most recordings, and
+/// the lead-in of one whose audio begins ahead of its video.
+fn video_lead_in_ns(metadata: &RecordingMetadata) -> u64 {
+    let video = TrackKind::Video.as_str();
+    let Some(track) = metadata.tracks.iter().find(|track| track.kind == video) else {
+        return 0;
+    };
+    metadata
+        .parts
+        .iter()
+        .flat_map(|part| &part.track_fragments)
+        .find(|fragment| fragment.track_id == track.id)
+        .map_or(0, |fragment| {
+            u64::try_from(fragment.decode_start_ns).unwrap_or(0)
+        })
 }
 
 fn playback_segments(metadata: &RecordingMetadata) -> Result<Vec<ArchiveSegment>, String> {
@@ -255,9 +280,10 @@ fn playback_segments(metadata: &RecordingMetadata) -> Result<Vec<ArchiveSegment>
                 pieces: Vec::new(),
             });
         }
-        let segment = segments
-            .last_mut()
-            .ok_or("playback does not begin with a keyframe")?;
+        // As for the original parts: what precedes the first keyframe belongs to no segment.
+        let Some(segment) = segments.last_mut() else {
+            continue;
+        };
         segment.byte_length = segment
             .byte_length
             .checked_add(part.length)
@@ -474,7 +500,7 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
 mod tests {
     use rolodex_core::processor::{
         InitMetadata, MetadataSource, PartMetadata, RecordingDetails, ThumbnailFrameMetadata,
-        ThumbnailMetadata,
+        ThumbnailMetadata, TrackFragmentMetadata, TrackMetadata,
     };
 
     use super::*;
@@ -643,6 +669,123 @@ mod tests {
         let encoded = serde_json::to_vec(&thumbnail).unwrap();
         let decoded: ArchiveThumbnail = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded, thumbnail);
+    }
+
+    #[test]
+    fn parts_before_the_first_keyframe_belong_to_no_segment() {
+        let mut metadata = metadata(
+            "recordings/h264/cam/2026-08-13_12-00-00.mp4",
+            "1786622400000000000",
+        );
+        metadata.parts[0].video_starts_with_sync = false;
+        let value =
+            ArchiveRecording::from_metadata(&metadata, "init/abc123.mp4".into(), None).unwrap();
+        assert_eq!(
+            value.segments,
+            vec![ArchiveSegment {
+                pieces: Vec::new(),
+                presentation_start_ns: 2_000_000_000,
+                byte_offset: 1_250,
+                byte_length: 200,
+            }]
+        );
+        // The recording still spans what was recorded, from its own start.
+        assert_eq!(value.started_at, "2026-08-13T12:00:00.000Z");
+        assert_eq!(value.duration_ns, 600_000_000_000);
+
+        let source = metadata.source.object_key.clone();
+        let piece = |source: &str, offset, length, presentation_start_ns, starts_with_sync| {
+            rolodex_core::processor::PlaybackPart {
+                source: source.into(),
+                offset,
+                length,
+                presentation_start_ns,
+                starts_with_sync,
+            }
+        };
+        metadata.playback_parts = vec![
+            piece(&source, 1_000, 100, 0, false),
+            piece("repairs/cam/a.mp4", 0, 60, 1_000_000_000, false),
+            piece("repairs/cam/a.mp4", 60, 90, 1_500_000_000, true),
+            piece(&source, 1_250, 200, 2_000_000_000, false),
+        ];
+        let value =
+            ArchiveRecording::from_metadata(&metadata, "init/abc123.mp4".into(), None).unwrap();
+        assert_eq!(
+            value.segments,
+            vec![ArchiveSegment {
+                presentation_start_ns: 1_500_000_000,
+                byte_offset: 0,
+                byte_length: 290,
+                pieces: vec![
+                    ArchivePiece {
+                        source: "repairs/cam/a.mp4".into(),
+                        byte_offset: 60,
+                        byte_length: 90,
+                    },
+                    ArchivePiece {
+                        source,
+                        byte_offset: 1_250,
+                        byte_length: 200,
+                    },
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn audio_ahead_of_the_video_extends_the_recording_by_the_lead_in() {
+        let mut metadata = metadata(
+            "recordings/h264/cam/2026-08-13_12-00-00.mp4",
+            "1786622400000000000",
+        );
+        let track = |id, kind: &str| TrackMetadata {
+            id,
+            kind: kind.into(),
+            timescale: 90_000,
+            codec: "avc1".into(),
+            width: None,
+            height: None,
+        };
+        let fragment = |track_id, decode_start_ns| TrackFragmentMetadata {
+            track_id,
+            base_decode_time: 0,
+            sample_count: 1,
+            decode_start_ns,
+            decode_duration_ns: 1_000_000_000,
+            presentation_start_ns: decode_start_ns,
+            presentation_duration_ns: 1_000_000_000,
+            first_sync_decode_ns: None,
+            first_sync_presentation_ns: None,
+        };
+        metadata.tracks = vec![track(1, "video"), track(2, "audio")];
+        // Two seconds of audio alone, then the video, 600 seconds long, from its first keyframe.
+        metadata.parts[0].video_starts_with_sync = false;
+        metadata.parts[0].track_fragments = vec![fragment(2, 0)];
+        metadata.parts[1].track_fragments = vec![fragment(2, 1_000_000_000)];
+        metadata.parts[2].track_fragments =
+            vec![fragment(2, 2_000_000_000), fragment(1, 2_000_000_000)];
+        let value =
+            ArchiveRecording::from_metadata(&metadata, "init/abc123.mp4".into(), None).unwrap();
+        assert_eq!(value.started_at, "2026-08-13T12:00:00.000Z");
+        assert_eq!(value.duration_ns, 602_000_000_000);
+        assert_eq!(value.ended_at, "2026-08-13T12:10:02.000Z");
+        assert_eq!(value.segments.len(), 1);
+        assert_eq!(value.segments[0].presentation_start_ns, 2_000_000_000);
+    }
+
+    #[test]
+    fn a_recording_with_no_keyframe_is_refused() {
+        let mut metadata = metadata(
+            "recordings/h264/cam/2026-08-13_12-00-00.mp4",
+            "1786622400000000000",
+        );
+        for part in &mut metadata.parts {
+            part.video_starts_with_sync = false;
+        }
+        assert!(
+            ArchiveRecording::from_metadata(&metadata, "init/abc123.mp4".into(), None).is_err()
+        );
     }
 
     #[test]
