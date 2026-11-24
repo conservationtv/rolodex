@@ -77,6 +77,10 @@ pub struct ProcessorOptions {
     pub fragment_read_ahead_bytes: usize,
     pub max_samples_indexed: u64,
     pub limits: PipelineLimits,
+    /// Whether indexing refuses a recording whose video codec isn't the one this
+    /// build decodes. Only thumbnails decode, so a caller that indexes without
+    /// rendering them, such as a local repair, can index either codec.
+    pub require_build_codec: bool,
 }
 
 impl Default for ProcessorOptions {
@@ -92,6 +96,7 @@ impl Default for ProcessorOptions {
             fragment_read_ahead_bytes: 16 * 1024,
             max_samples_indexed: 1_000_000,
             limits,
+            require_build_codec: true,
         }
     }
 }
@@ -593,7 +598,7 @@ where
                 }
                 let bytes = reader.read(header.start, size).await?;
                 let parsed = parse_archive_moov(&bytes)?;
-                if parsed.video.config.codec != BUILD_CODEC {
+                if options.require_build_codec && parsed.video.config.codec != BUILD_CODEC {
                     return Err(Error::CodecMismatch {
                         expected: BUILD_CODEC,
                         actual: parsed.video.config.codec,
