@@ -287,9 +287,10 @@ CI builds the addon for macOS arm64, Linux x64 and arm64 (glibc 2.17 and
 later), and Windows x64, and uploads each as an artifact. To publish it to npm,
 set the version in `crates/rolodex-node/package.json` and push a
 `rolodex-repair-v<version>` tag: CI publishes a package per platform, then
-`@conservationtv/rolodex-repair` with them as optional dependencies, with
-provenance. It needs an `NPM_TOKEN` secret that can publish to the
-`@conservationtv` scope.
+`@conservationtv/rolodex-repair` with them as optional dependencies. It uses
+npm trusted publishing, so there is no token: each of the five packages must
+name this repository's `ci.yml` workflow as its trusted publisher on
+npmjs.com, and npm attaches provenance to every publish.
 
 ### Archive object reclamation
 
