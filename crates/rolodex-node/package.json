@@ -1,0 +1,40 @@
+{
+  "name": "@conservationtv/rolodex-repair",
+  "version": "0.1.0",
+  "description": "Repairs local fMP4 recordings before they are uploaded to Rolodex",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/conservationtv/rolodex.git",
+    "directory": "crates/rolodex-node"
+  },
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "napi": {
+    "binaryName": "rolodex-repair",
+    "packageName": "@conservationtv/rolodex-repair",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
+    ]
+  },
+  "scripts": {
+    "build": "napi build --platform --no-const-enum --profile release-node",
+    "build:debug": "napi build --platform --no-const-enum"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "3.11.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

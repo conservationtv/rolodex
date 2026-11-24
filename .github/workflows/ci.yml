@@ -67,6 +67,101 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm audit
 
+  node-addon:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: macos-14
+            target: aarch64-apple-darwin
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            # Link against glibc 2.17, so the addon loads on older distributions.
+            cross: --use-napi-cross
+          - host: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            cross: --use-napi-cross
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.host }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.22.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: cargo clippy -p rolodex-node --all-targets -- -D warnings
+      - working-directory: crates/rolodex-node
+        run: pnpm exec napi build --platform --no-const-enum --profile release-node --target ${{ matrix.target }} ${{ matrix.cross }}
+      - name: Generated bindings are committed
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: git diff --exit-code crates/rolodex-node/index.js crates/rolodex-node/index.d.ts
+      - name: Load the addon and index both codecs
+        run: |
+          node -e '
+            const { repairRecording } = require("./crates/rolodex-node");
+            (async () => {
+              for (const codec of ["h264", "h265"]) {
+                const summary = await repairRecording(`fixtures/${codec}/mediamtx-v1.18.2-640x360.mp4`, "repaired.mp4");
+                console.log(codec, JSON.stringify(summary));
+                if (summary.outcome !== "unchanged" || summary.reason !== "not_needed") process.exit(1);
+              }
+            })().catch((error) => { console.error(error); process.exit(1); });
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rolodex-repair-${{ matrix.target }}
+          path: crates/rolodex-node/*.node
+          if-no-files-found: error
+
+  # Publishes @conservationtv/rolodex-repair and its platform packages to npm on a
+  # rolodex-repair-v<version> tag matching crates/rolodex-node/package.json.
+  publish-node-addon:
+    if: startsWith(github.ref, 'refs/tags/rolodex-repair-v')
+    needs: [test, security-audit, node-addon]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.22.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: The tag names the package's version
+        run: test "${GITHUB_REF_NAME#rolodex-repair-v}" = "$(node -p 'require("./crates/rolodex-node/package.json").version')"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rolodex-repair-*
+          path: crates/rolodex-node/artifacts
+          merge-multiple: true
+      - working-directory: crates/rolodex-node
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true
+        run: |
+          pnpm exec napi create-npm-dirs
+          pnpm exec napi artifacts --output-dir artifacts
+          pnpm exec napi pre-publish -t npm
+          npm publish
+
   worker-package:
     runs-on: ubuntu-latest
     strategy:

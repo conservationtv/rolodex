@@ -249,6 +249,48 @@ a scheduled deletion task. Lifecycle rules must cover the recording, repair and
 thumbnail prefixes and allow a playback lease grace period beyond the visible
 retention window. Shared initialization objects must remain available.
 
+### Repairing before upload
+
+`write_repaired_recording` makes the same repair as one file: the recording
+with its oversized parts replaced by their keyframe-aligned pieces, everything
+else copied as it is, including the `moov` and its `mtxi` start time. Only
+`mfhd` sequence numbers change, renumbered so the file's fragments stay in
+order. A recording repaired this way needs no repair when the Worker indexes it.
+It writes nothing when no repair is needed or possible, and doesn't hold to the
+read budget, which bounds ranged reads from object storage.
+
+`crates/rolodex-node` exposes it to Node through napi-rs as
+`@conservationtv/rolodex-repair`, for recorders that upload local files:
+
+```ts
+import { repairRecording } from '@conservationtv/rolodex-repair';
+
+const summary = await repairRecording(recording, `${recording}.repairing`);
+// { outcome: 'repaired' | 'unchanged', reason?, parts, partsSplit, pieces }
+```
+
+The repair runs on Node's worker pool. The output is written only when the
+outcome is `repaired`, synced to disk before the promise resolves, and removed
+if the repair fails, so the caller can rename it over the recording. Indexing
+for a repair skips the build's codec check, as nothing is decoded, so one addon
+repairs both H.264 and H.265. A panic rejects the promise instead of unwinding
+into Node: the addon is built with the `release-node` profile, which unwinds
+where `release` aborts.
+
+```bash
+cd crates/rolodex-node
+pnpm run build        # release-node profile, for this machine
+pnpm run build:debug
+```
+
+CI builds the addon for macOS arm64, Linux x64 and arm64 (glibc 2.17 and
+later), and Windows x64, and uploads each as an artifact. To publish it to npm,
+set the version in `crates/rolodex-node/package.json` and push a
+`rolodex-repair-v<version>` tag: CI publishes a package per platform, then
+`@conservationtv/rolodex-repair` with them as optional dependencies, with
+provenance. It needs an `NPM_TOKEN` secret that can publish to the
+`@conservationtv` scope.
+
 ### Archive object reclamation
 
 Archive retention prunes references, not R2 objects. Superseded content-addressed

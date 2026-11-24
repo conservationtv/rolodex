@@ -1,0 +1,23 @@
+[package]
+name = "rolodex-node"
+description = "Node-API binding that repairs local fMP4 recordings before they are uploaded"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+futures-executor = "0.3.31"
+napi = "3.16.3"
+napi-derive = "3.7.2"
+# Indexing for a repair never decodes, and skips the codec check, so either
+# codec feature serves both codecs; one is required to build rolodex-core.
+rolodex-core = { path = "../rolodex-core", default-features = false, features = ["codec-h264", "std-fs"] }
+rolodex-repair = { path = "../rolodex-repair", default-features = false, features = ["codec-h264"] }
+
+[build-dependencies]
+napi-build = "2.7.0"

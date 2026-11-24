@@ -1,6 +1,7 @@
 packages:
   - "demo"
   - "packages/*"
+  - "crates/rolodex-node"
 
 onlyBuiltDependencies:
   - esbuild

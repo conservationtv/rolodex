@@ -3,6 +3,7 @@ members = [
     "crates/rolodex-core",
     "crates/rolodex-clip",
     "crates/rolodex-repair",
+    "crates/rolodex-node",
     "crates/cli",
     "crates/worker",
 ]
@@ -40,6 +41,12 @@ lto = "fat"
 opt-level = 3
 panic = "abort"
 strip = "symbols"
+
+# The Node addon runs inside the agent's process, so a panic must unwind to be
+# caught and returned to JavaScript rather than abort the process.
+[profile.release-node]
+inherits = "release"
+panic = "unwind"
 
 [profile.release-small]
 inherits = "release"

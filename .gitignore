@@ -11,3 +11,7 @@
 fuzz/artifacts/
 fuzz/corpus/
 /fuzz/target/
+/crates/rolodex-node/node_modules/
+*.node
+/crates/rolodex-node/npm/
+/crates/rolodex-node/artifacts/
