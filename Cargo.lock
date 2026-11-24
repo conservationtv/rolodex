@@ -822,11 +822,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rolodex-repair"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "rolodex-core",
+]
+
+[[package]]
 name = "rolodex-worker"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "rolodex-core",
+ "rolodex-repair",
  "serde",
  "serde_json",
  "sha2",
