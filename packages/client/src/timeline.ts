@@ -132,3 +132,21 @@ export function locateWithin(spans: TimelineSpan[], at: ISODateString): Timeline
   }
   return undefined;
 }
+
+/** The recorded parts of a timeline, in order, with touching or overlapping
+ * recordings merged into one range. Gaps between ranges are real gaps. */
+export function recordingRanges(timeline: Pick<ArchiveTimeline, "spans">): ISODateRange[] {
+  const recordings = timeline.spans
+    .filter((span) => span.kind === "recording" && utcNs(span.endedAt) > utcNs(span.startedAt))
+    .sort((left, right) => (utcNs(left.startedAt) < utcNs(right.startedAt) ? -1 : 1));
+  const ranges: ISODateRange[] = [];
+  for (const span of recordings) {
+    const last = ranges.at(-1);
+    if (last && utcNs(span.startedAt) <= utcNs(last.endedAt)) {
+      if (utcNs(span.endedAt) > utcNs(last.endedAt)) last.endedAt = span.endedAt;
+    } else {
+      ranges.push({ startedAt: span.startedAt, endedAt: span.endedAt });
+    }
+  }
+  return ranges;
+}

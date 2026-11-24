@@ -242,21 +242,30 @@ export class ArchivePlayerStore {
     );
   }
 
+  /** Loads the manifest, timeline, and playhead location. Rejects with the
+   * failure (also published as `phase: "error"`), or with the signal's reason
+   * when cancelled, in which case the previous snapshot is restored. */
   async initialize(options?: ArchivePlayerInitializeOptions): Promise<void> {
-    const requestOptions = options?.signal ? { signal: options.signal } : undefined;
+    const signal = options?.signal;
+    signal?.throwIfAborted();
+    const requestOptions = signal ? { signal } : undefined;
+    const before = this.snapshot;
     this.mutate((snapshot) => ({ ...carryBase(snapshot), phase: "loading-manifest" }));
     try {
       const { stream, coverage } = await this.manifests.describe(requestOptions);
+      signal?.throwIfAborted();
       const viewport = this.snapshot.viewport;
       const range = options?.range
         ?? (viewport.startedAt && viewport.endedAt
           ? { startedAt: viewport.startedAt, endedAt: viewport.endedAt }
           : coverage);
       const timeline = range ? await this.manifests.getTimeline(range, requestOptions) : undefined;
+      signal?.throwIfAborted();
       const playhead = this.snapshot.playhead;
       const location = playhead
         ? await this.manifests.locate(playhead, requestOptions)
         : undefined;
+      signal?.throwIfAborted();
       this.mutate((snapshot) => {
         const next: ReadyArchivePlayerSnapshot = {
           ...carryBase(snapshot),
@@ -271,8 +280,14 @@ export class ArchivePlayerStore {
         if (location) next.location = location;
         return next;
       });
-    } catch (error) {
-      this.fail(error instanceof Error ? error : new Error(String(error)));
+    } catch (cause) {
+      if (signal?.aborted) {
+        this.mutate((snapshot) => ({ ...before, playback: snapshot.playback }));
+        throw signal.reason;
+      }
+      const error = asError(cause);
+      this.fail(error);
+      throw error;
     }
   }
 
@@ -352,6 +367,13 @@ export class ArchivePlayerStore {
     return detach;
   }
 
+  /** Moves the playhead. With a media element attached, resolves once the
+   * element can show a frame at the target; in a gap, once the gap clock is
+   * positioned. Rejects with the failure (also published as `phase: "error"`),
+   * or with the signal's reason when cancelled. Cancellation before media
+   * loading starts leaves the snapshot unchanged; after that, the transition
+   * completes and only the caller's wait is cancelled. Resolves without
+   * effect when a later seek supersedes it. */
   async seek(
     to: ISODateString,
     options?: ArchivePlayerSeekOptions,
@@ -359,26 +381,38 @@ export class ArchivePlayerStore {
     return this.seekTo(to, options, true);
   }
 
+  /** Internal transitions publish failures through the snapshot alone. */
+  private continueTo(to: ISODateString, autoplay: boolean): void {
+    void this.seekTo(to, { autoplay }, false).catch(() => {});
+  }
+
   private async seekTo(
     to: ISODateString,
     options: ArchivePlayerSeekOptions | undefined,
     allowReuse: boolean,
   ): Promise<void> {
-    this.gapClock.stop();
-    if (options?.autoplay !== undefined) this.playbackIntent = options.autoplay;
+    const signal = options?.signal;
+    signal?.throwIfAborted();
     const token = ++this.seekToken;
-    const requestOptions = options?.signal ? { signal: options.signal } : undefined;
+    const wasInGap = this.snapshot.phase === "gap";
+    this.gapClock.stop();
+    const requestOptions = signal ? { signal } : undefined;
     try {
       /* The stream identity is required (and cached by the manifest client)
        * so every post-manifest phase can carry it. */
       const { stream } = await this.manifests.describe(requestOptions);
       if (token !== this.seekToken) return;
+      signal?.throwIfAborted();
       const location = await this.manifests.locate(to, requestOptions);
       to = location.utc;
       if (token !== this.seekToken) return;
+      signal?.throwIfAborted();
+      /* Past this point the seek commits to its transition. */
+      if (options?.autoplay !== undefined) this.playbackIntent = options.autoplay;
       if (location.span.kind === "gap") {
         const autoplay = options?.autoplay ?? this.playbackIntent;
         this.enterGap(to, location, stream, autoplay);
+        if (this.snapshot.phase === "error") throw this.snapshot.error;
         return;
       }
 
@@ -396,6 +430,8 @@ export class ArchivePlayerStore {
         const autoplay = options?.autoplay ?? this.playbackIntent;
         this.playbackIntent = autoplay;
         if (element) element.currentTime = mediaTime;
+        const frame = element ? this.waitForFrame(element, token, signal, false) : undefined;
+        frame?.catch(() => {});
         this.mutate((snapshot) => ({
           ...carryBase(snapshot),
           ...carryLoaded(snapshot),
@@ -409,24 +445,10 @@ export class ArchivePlayerStore {
             mediaTime,
           },
         }));
-        if (!element) return;
-        if (autoplay) {
-          await element.play().catch(() => {
-            if (token !== this.seekToken) return;
-            this.playbackIntent = false;
-            this.mutate((snapshot) => ({
-              ...carryBase(snapshot),
-              ...carryLoaded(snapshot),
-              phase: "paused",
-              stream,
-              playhead: to,
-              location,
-              playback: { ...snapshot.playback, playing: false },
-            }));
-          });
-        } else {
-          element.pause();
-        }
+        if (!element || !frame) return;
+        if (autoplay) await this.autoplay(element, token);
+        else element.pause();
+        await frame;
         return;
       }
 
@@ -461,18 +483,96 @@ export class ArchivePlayerStore {
       const autoplay = options?.autoplay ?? this.playbackIntent;
       this.playbackIntent = autoplay;
       this.bindLease(element, lease);
-      if (autoplay) {
-        await element.play().catch(() => {
-          /* Blocked autoplay is not a seek failure. */
-        });
+      const frame = this.waitForFrame(element, token, signal, true);
+      frame.catch(() => {});
+      if (autoplay) await this.autoplay(element, token);
+      await frame;
+    } catch (cause) {
+      /* A superseded seek's outcome belongs to the seek that replaced it. */
+      if (token !== this.seekToken) return;
+      if (signal?.aborted) {
+        if (wasInGap && this.snapshot.phase === "gap") this.resumeGapClock();
+        throw signal.reason;
       }
-    } catch (error) {
-      if (token === this.seekToken) {
-        this.fail(error instanceof Error ? error : new Error(String(error)));
-      }
+      const error = asError(cause);
+      if (this.snapshot.phase !== "error" || this.snapshot.error !== error) this.fail(error);
+      throw error;
     }
   }
 
+  /** Blocked autoplay is not a seek failure: the seek settles paused. */
+  private async autoplay(element: HTMLMediaElement, token: number): Promise<void> {
+    try {
+      await element.play();
+    } catch (cause) {
+      if (token !== this.seekToken || isAbortError(cause)) return;
+      this.playbackIntent = false;
+      this.mutate((snapshot) => {
+        const playback = { ...snapshot.playback, playing: false, buffering: false };
+        if (snapshot.phase === "playing") return { ...snapshot, phase: "paused", playback };
+        return { ...snapshot, playback };
+      });
+    }
+  }
+
+  /** Resolves once the element can show a frame at its current position.
+   * A freshly bound playlist must first load data, since the element may
+   * still report the previous source's ready state. */
+  private waitForFrame(
+    element: HTMLMediaElement,
+    token: number,
+    signal: AbortSignal | undefined,
+    fresh: boolean,
+  ): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let loaded = !fresh;
+      const events = ["loadeddata", "seeked", "canplay", "playing"] as const;
+      let settled = false;
+      const settle = (complete: () => void): void => {
+        if (settled) return;
+        settled = true;
+        for (const event of events) element.removeEventListener(event, check);
+        element.removeEventListener("loadeddata", onLoaded);
+        signal?.removeEventListener("abort", onAbort);
+        unsubscribe();
+        complete();
+      };
+      const check = (): void => {
+        if (this.disposed || token !== this.seekToken || this.element !== element) {
+          settle(resolve);
+        } else if (this.snapshot.phase === "error") {
+          const { error } = this.snapshot;
+          settle(() => reject(error));
+        } else if (loaded && element.readyState >= HAVE_CURRENT_DATA && !element.seeking) {
+          settle(resolve);
+        }
+      };
+      const onLoaded = (): void => {
+        loaded = true;
+      };
+      const onAbort = (): void => settle(() => reject(signal?.reason));
+      /* onLoaded is registered first so the shared loadeddata check sees it. */
+      element.addEventListener("loadeddata", onLoaded);
+      for (const event of events) element.addEventListener(event, check);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const unsubscribe = this.subscribe(check);
+      if (signal?.aborted) onAbort();
+      else check();
+    });
+  }
+
+  private resumeGapClock(): void {
+    if (this.snapshot.phase !== "gap" || !this.snapshot.playhead) return;
+    this.gapClock.configure(
+      Date.parse(this.snapshot.playhead),
+      Date.parse(this.snapshot.location.span.endedAt),
+      this.snapshot.playback.rate,
+    );
+    if (this.snapshot.playback.playing) this.gapClock.play();
+  }
+
+  /** Starts playback. Rejects, leaving the store paused, when the browser
+   * refuses (for example `NotAllowedError` without a user gesture). */
   async play(): Promise<void> {
     this.playbackIntent = true;
     if (this.snapshot.phase === "gap") {
@@ -492,13 +592,16 @@ export class ArchivePlayerStore {
     if (!element) return;
     try {
       await element.play();
-    } catch {
+    } catch (cause) {
+      /* A pause or source change interrupted this request; the later call owns the state. */
+      if (isAbortError(cause)) return;
       this.playbackIntent = false;
       this.mutate((snapshot) => {
         const playback = { ...snapshot.playback, playing: false, buffering: false };
         if (snapshot.phase === "playing") return { ...snapshot, phase: "paused", playback };
         return { ...snapshot, playback };
       });
+      throw asError(cause);
     }
   }
 
@@ -763,7 +866,7 @@ export class ArchivePlayerStore {
   private handleGapEnded(): void {
     if (this.snapshot.phase !== "gap") return;
     const boundary = this.snapshot.location.span.endedAt;
-    void this.seekTo(boundary, { autoplay: this.playbackIntent }, false);
+    this.continueTo(boundary, this.playbackIntent);
   }
 
   private async handleEnded(): Promise<void> {
@@ -810,7 +913,7 @@ export class ArchivePlayerStore {
         if (stream !== undefined) this.enterGap(boundary, location, stream, autoplay);
         return;
       }
-      await this.seekTo(boundary, { autoplay }, false);
+      await this.seekTo(boundary, { autoplay }, false).catch(() => {});
     } catch (error) {
       if (token === this.seekToken) {
         this.fail(error instanceof Error ? error : new Error(String(error)));
@@ -835,7 +938,7 @@ export class ArchivePlayerStore {
     const recovery = await this.nextRecoveryPoint(failedUtc, missingSource);
     if (recovery === undefined) return false;
     this.lastMediaRecoveryAt = now;
-    void this.seekTo(recovery, { autoplay: this.snapshot.playback.playing }, false);
+    this.continueTo(recovery, this.snapshot.playback.playing);
     return true;
   }
 
@@ -917,6 +1020,18 @@ export class ArchivePlayerStore {
       return next;
     });
   }
+}
+
+/** HTMLMediaElement.HAVE_CURRENT_DATA, without depending on the DOM global. */
+const HAVE_CURRENT_DATA = 2;
+
+function asError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause));
+}
+
+/** HTMLMediaElement.play() reports an interrupted request as a DOMException. */
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof DOMException && cause.name === "AbortError";
 }
 
 /** Loading a new media resource resets playbackRate to defaultPlaybackRate. Keep both

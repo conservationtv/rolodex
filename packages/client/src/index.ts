@@ -1,3 +1,4 @@
+export { recordingRanges } from "./timeline.js";
 export { S3ArchiveStorage } from "./storage.js";
 export { ArchiveManifestClient } from "./manifest-client.js";
 export { PlaylistFactory } from "./playlist.js";

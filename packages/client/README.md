@@ -228,6 +228,31 @@ store.setPlaybackRate(2);   // clamped to 0.25–4
 await store.seek(utc, { autoplay: true, signal });
 ```
 
+The async methods reject when they fail, so `await` is enough to know
+whether they worked:
+
+- `initialize()` and `seek()` reject with the failure, which is also
+  published as `phase: "error"`. When their `signal` aborts they reject
+  with its reason and do not enter `error`: an aborted `initialize()`
+  restores the previous snapshot, and a seek aborted before media
+  loading starts leaves the snapshot unchanged. Once media loading has
+  started the seek completes, and the signal only cancels the wait.
+- With a media element attached, `seek()` resolves once the element can
+  show a frame at the target, not merely once the playlist is bound. A
+  seek into a gap resolves once the gap clock is positioned. A seek that
+  a later seek supersedes resolves without effect.
+- `play()` (and `toggle()`) rejects when the browser refuses playback,
+  for example with `NotAllowedError` before a user gesture, and leaves
+  the store paused. Blocked autoplay requested through
+  `seek(utc, { autoplay: true })` is not a seek failure; the seek
+  resolves paused.
+- `refresh()` rejects on failure and publishes the error as
+  `snapshot.warning`, keeping the current timeline.
+
+`recordingRanges(timeline)` returns the recorded parts of a timeline as
+ordered ISO ranges, merging touching recordings, for drawing coverage
+bars or combining with other sources.
+
 Seeks that land inside the currently compiled playlist window are
 instant; others compile a new window transparently. Damaged or missing
 media is skipped automatically to the next random-access point, and
