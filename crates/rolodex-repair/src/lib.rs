@@ -16,10 +16,11 @@ pub use rolodex_core::processor::{PlaybackPart, RepairSkipReason};
 use rolodex_core::{
     ByteSource, Error, ProcessorOptions, ProcessorOutput, RecordingIndex, Result, SourceIdentity,
     index_recording,
-    mp4::{IndexedSample, IndexedTrackFragment, TrackKind, parse_indexed_fragment},
+    mp4::{IndexedSample, IndexedTrackFragment, SampleDefaults, TrackKind, parse_indexed_fragment},
+    processor::PartMetadata,
     render_recording_thumbnail,
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, io::Write};
 const MAX_SECONDS: f64 = 6.0;
 /// Decimal-byte playback cut threshold; independent of the per-source-part allocation cap.
 const MAX_BYTES: u64 = 4_000_000;
@@ -71,6 +72,135 @@ pub async fn repair_recording<S: ByteSource + ?Sized>(
     index: &mut RecordingIndex,
     sink: &dyn RepairSink,
 ) -> Result<Vec<PlaybackPart>> {
+    let Some(plan) = plan_repair(source, index)? else {
+        return Ok(Vec::new());
+    };
+    let parts = &index.metadata.parts;
+    if index
+        .metrics
+        .bytes_read
+        .saturating_add(plan.cuts.keys().map(|i| parts[*i].length).sum::<u64>())
+        > index.options().limits.max_total_bytes_read
+    {
+        index.metrics.repair_skip_reason = Some(RepairSkipReason::ByteBudgetExhausted);
+        return Ok(Vec::new());
+    }
+    let mut result = Vec::new();
+    for (i, part) in parts.iter().enumerate() {
+        let Some(points) = plan.cuts.get(&i) else {
+            result.push(PlaybackPart {
+                source: index.metadata.source.object_key.clone(),
+                offset: part.offset,
+                length: part.length,
+                presentation_start_ns: part.presentation_start_ns,
+                starts_with_sync: part.video_starts_with_sync,
+            });
+            continue;
+        };
+        let (output, pieces) = rewrite_part(source, part, points, &plan, None).await?;
+        index.metrics.bytes_read += part.length;
+        index.metrics.range_requests += 1;
+        let key = sink.put(output).await?;
+        result.extend(pieces.into_iter().map(|piece| PlaybackPart {
+            source: key.clone(),
+            ..piece
+        }));
+    }
+    Ok(result)
+}
+
+/// What [`write_repaired_recording`] did with a recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileRepair {
+    /// The repaired recording was written: `parts_split` of its `parts` were
+    /// rewritten as `pieces` keyframe-aligned parts between them.
+    Repaired {
+        parts: usize,
+        parts_split: usize,
+        pieces: usize,
+    },
+    /// Nothing was written, for the reason given; the recording stands as it is.
+    Unchanged(RepairSkipReason),
+}
+
+/// Write an indexed recording to `output` with its oversized parts split at
+/// keyframes, as one file in place of the worker's separate repair objects.
+///
+/// Everything else is copied as it is: the `ftyp`, the `moov` with its `mtxi`,
+/// any boxes between parts, and the untouched parts, whose `mfhd` sequence
+/// numbers alone are rewritten so the file's fragments stay numbered in order.
+/// When no repair is needed or possible nothing is written. Unlike
+/// [`repair_recording`], it doesn't hold to the index's byte budget, which is
+/// for ranged reads from object storage: every byte is read to be copied.
+pub async fn write_repaired_recording<S: ByteSource + ?Sized, W: Write>(
+    source: &S,
+    index: &RecordingIndex,
+    output: &mut W,
+) -> Result<FileRepair> {
+    let plan = match plan_cuts(source, index)? {
+        Ok(plan) => plan,
+        Err(reason) => return Ok(FileRepair::Unchanged(reason)),
+    };
+    let parts = &index.metadata.parts;
+    let mut cursor = 0;
+    let mut sequence = parts.first().map_or(1, |part| part.sequence_number);
+    let mut pieces_written = 0;
+    for (i, part) in parts.iter().enumerate() {
+        copy_range(source, cursor, part.offset, output, None).await?;
+        let end = part
+            .offset
+            .checked_add(part.length)
+            .ok_or(Error::Invalid("part end overflow"))?;
+        if let Some(points) = plan.cuts.get(&i) {
+            let (bytes, pieces) = rewrite_part(source, part, points, &plan, Some(sequence)).await?;
+            write_all(output, &bytes)?;
+            pieces_written += pieces.len();
+            sequence = next_sequence(sequence, pieces.len())?;
+        } else {
+            copy_range(source, part.offset, end, output, Some(sequence)).await?;
+            sequence = next_sequence(sequence, 1)?;
+        }
+        cursor = end;
+    }
+    copy_range(source, cursor, source.len(), output, None).await?;
+    output
+        .flush()
+        .map_err(|error| Error::Source(format!("flush repaired recording: {error}")))?;
+    Ok(FileRepair::Repaired {
+        parts: parts.len(),
+        parts_split: plan.cuts.len(),
+        pieces: pieces_written,
+    })
+}
+
+/// Where a recording's parts are to be cut, and what rewriting them needs.
+struct Plan {
+    /// The video samples each part to be split is cut before, by its index.
+    cuts: BTreeMap<usize, Vec<usize>>,
+    defaults: Vec<(u32, SampleDefaults)>,
+    timescales: Vec<(u32, u32)>,
+    video_id: u32,
+}
+
+/// Plan an index's repair, recording in its metrics why there is none.
+fn plan_repair<S: ByteSource + ?Sized>(
+    source: &S,
+    index: &mut RecordingIndex,
+) -> Result<Option<Plan>> {
+    Ok(match plan_cuts(source, index)? {
+        Ok(plan) => Some(plan),
+        Err(reason) => {
+            index.metrics.repair_skip_reason = Some(reason);
+            None
+        }
+    })
+}
+
+/// Plan an index's repair: the plan, or why the recording can't or needn't be repaired.
+fn plan_cuts<S: ByteSource + ?Sized>(
+    source: &S,
+    index: &RecordingIndex,
+) -> Result<std::result::Result<Plan, RepairSkipReason>> {
     // Audio samples decode independently of one another, so an audio track can be
     // cut wherever the video is. No other kind of track makes that promise.
     let video_id = index.movie().video.track_id;
@@ -81,14 +211,13 @@ pub async fn repair_recording<S: ByteSource + ?Sized>(
         .iter()
         .any(|track| track.id != video_id && track.kind != audio)
     {
-        index.metrics.repair_skip_reason = Some(RepairSkipReason::UnsupportedTracks);
-        return Ok(Vec::new());
+        return Ok(Err(RepairSkipReason::UnsupportedTracks));
     }
     let parts = &index.metadata.parts;
     let mut boundaries = Vec::new();
     let mut part_index = 0;
     let mut sample_index = 0;
-    // Reuse the sample table from the existing scan; no second pass over R2 headers.
+    // Reuse the sample table from the existing scan; no second pass over the headers.
     for sample in index.video_samples() {
         while part_index + 1 < parts.len() && sample.location.offset >= parts[part_index + 1].offset
         {
@@ -113,139 +242,173 @@ pub async fn repair_recording<S: ByteSource + ?Sized>(
     };
     let cuts = match plan(&boundaries, end) {
         Ok(cuts) => cuts,
-        Err(Error::Unsupported(_)) => {
-            index.metrics.repair_skip_reason = Some(RepairSkipReason::UnsupportedGop);
-            return Ok(Vec::new());
-        }
+        Err(Error::Unsupported(_)) => return Ok(Err(RepairSkipReason::UnsupportedGop)),
         Err(e) => return Err(e),
     };
     if cuts.is_empty() {
-        index.metrics.repair_skip_reason = Some(RepairSkipReason::NotNeeded);
-        return Ok(Vec::new());
+        return Ok(Err(RepairSkipReason::NotNeeded));
     }
     if cuts.keys().any(|i| parts[*i].length > MAX_REPAIR as u64) {
-        index.metrics.repair_skip_reason = Some(RepairSkipReason::OversizedPart);
-        return Ok(Vec::new());
-    }
-    if index
-        .metrics
-        .bytes_read
-        .saturating_add(cuts.keys().map(|i| parts[*i].length).sum::<u64>())
-        > index.options().limits.max_total_bytes_read
-    {
-        index.metrics.repair_skip_reason = Some(RepairSkipReason::ByteBudgetExhausted);
-        return Ok(Vec::new());
+        return Ok(Err(RepairSkipReason::OversizedPart));
     }
     let movie = index.movie();
-    let defaults = movie
-        .tracks
-        .iter()
-        .map(|t| (t.track_id, t.defaults))
-        .collect::<Vec<_>>();
-    let timescales = movie
-        .tracks
-        .iter()
-        .map(|t| (t.track_id, t.timescale))
-        .collect::<Vec<_>>();
-    let scale = i128::from(timescale_of(&timescales, video_id)?);
-    let mut result = Vec::new();
-    for (i, part) in parts.iter().enumerate() {
-        let Some(points) = cuts.get(&i) else {
-            result.push(PlaybackPart {
-                source: index.metadata.source.object_key.clone(),
-                offset: part.offset,
-                length: part.length,
-                presentation_start_ns: part.presentation_start_ns,
-                starts_with_sync: part.video_starts_with_sync,
-            });
-            continue;
+    Ok(Ok(Plan {
+        cuts,
+        defaults: movie
+            .tracks
+            .iter()
+            .map(|t| (t.track_id, t.defaults))
+            .collect(),
+        timescales: movie
+            .tracks
+            .iter()
+            .map(|t| (t.track_id, t.timescale))
+            .collect(),
+        video_id,
+    }))
+}
+
+/// Rewrite one part as keyframe-aligned pieces cut before the video samples
+/// `points`: the pieces' bytes, and where each lies in them, their sources left
+/// empty. The pieces keep the part's `mfhd` sequence number, or are numbered on
+/// from `sequence`.
+async fn rewrite_part<S: ByteSource + ?Sized>(
+    source: &S,
+    part: &PartMetadata,
+    points: &[usize],
+    plan: &Plan,
+    sequence: Option<u32>,
+) -> Result<(Vec<u8>, Vec<PlaybackPart>)> {
+    let scale = i128::from(timescale_of(&plan.timescales, plan.video_id)?);
+    let bytes = source.range(part.offset, part.length as usize).await?;
+    let header_size = u32::from_be_bytes(
+        bytes
+            .get(..4)
+            .ok_or(Error::Invalid("short repair part"))?
+            .try_into()
+            .map_err(|_| Error::Invalid("short repair header"))?,
+    ) as usize;
+    let parsed = parse_indexed_fragment(
+        bytes
+            .get(..header_size)
+            .ok_or(Error::Invalid("invalid repair moof"))?,
+        part.offset,
+        &plan.defaults,
+    )?;
+    let pieces = split(&parsed.tracks, &plan.timescales, plan.video_id, points)?;
+    // One source buffer and one bounded output buffer; no recording-sized allocation.
+    let samples = parsed.tracks.iter().flat_map(|track| &track.samples);
+    let estimated = samples
+        .map(|s| s.location.size as usize + SAMPLE_ENTRY_BYTES)
+        .sum::<usize>()
+        + pieces.len() * (PIECE_HEADER_BYTES + parsed.tracks.len() * TRACK_HEADER_BYTES);
+    if estimated > MAX_REPAIR + REPAIR_HEADER_SLACK {
+        return Err(Error::Limit("repair output exceeds cap"));
+    }
+    let mut output = Vec::with_capacity(estimated);
+    let mut rewritten = Vec::new();
+    for (number, runs) in pieces.iter().enumerate() {
+        let start = output.len();
+        let video = runs
+            .iter()
+            .find(|run| run.track_id == plan.video_id)
+            .ok_or(Error::Invalid("repair fragment has no video samples"))?;
+        let presentation = video
+            .samples
+            .iter()
+            .scan(video.decode_time as i128, |time, s| {
+                let pts = *time + s.composition_time_offset as i128;
+                *time += s.duration as i128;
+                Some(pts)
+            })
+            .min()
+            .ok_or(Error::Invalid("empty repair fragment"))?;
+        let sequence = match sequence {
+            Some(first) => next_sequence(first, number)?,
+            None => parsed.sequence_number,
         };
-        let bytes = source.range(part.offset, part.length as usize).await?;
-        index.metrics.bytes_read += part.length;
-        index.metrics.range_requests += 1;
-        let header_size = u32::from_be_bytes(
-            bytes
-                .get(..4)
-                .ok_or(Error::Invalid("short repair part"))?
-                .try_into()
-                .map_err(|_| Error::Invalid("short repair header"))?,
-        ) as usize;
-        let parsed = parse_indexed_fragment(
-            bytes
-                .get(..header_size)
-                .ok_or(Error::Invalid("invalid repair moof"))?,
-            part.offset,
-            &defaults,
-        )?;
-        let pieces = split(&parsed.tracks, &timescales, video_id, points)?;
-        // One source buffer and one bounded output buffer; no recording-sized allocation.
-        let samples = parsed.tracks.iter().flat_map(|track| &track.samples);
-        let estimated = samples
-            .map(|s| s.location.size as usize + SAMPLE_ENTRY_BYTES)
-            .sum::<usize>()
-            + pieces.len() * (PIECE_HEADER_BYTES + parsed.tracks.len() * TRACK_HEADER_BYTES);
-        if estimated > MAX_REPAIR + REPAIR_HEADER_SLACK {
+        output.extend(build_moof(runs, sequence)?);
+        let payload = runs.iter().map(TrackRun::payload).sum::<u64>();
+        output.extend(
+            u32::try_from(payload + 8)
+                .map_err(|_| Error::Limit("repair mdat too large"))?
+                .to_be_bytes(),
+        );
+        output.extend(b"mdat");
+        for sample in runs.iter().flat_map(|run| run.samples) {
+            let offset = sample
+                .location
+                .offset
+                .checked_sub(part.offset)
+                .ok_or(Error::Invalid("repair sample before part"))?
+                as usize;
+            output.extend(
+                bytes
+                    .get(offset..offset + sample.location.size as usize)
+                    .ok_or(Error::Invalid("repair sample outside part"))?,
+            );
+        }
+        if output.len() > MAX_REPAIR + REPAIR_HEADER_SLACK {
             return Err(Error::Limit("repair output exceeds cap"));
         }
-        let mut output = Vec::with_capacity(estimated);
-        let mut rewritten = Vec::new();
-        for runs in &pieces {
-            let start = output.len();
-            let video = runs
-                .iter()
-                .find(|run| run.track_id == video_id)
-                .ok_or(Error::Invalid("repair fragment has no video samples"))?;
-            let presentation = video
-                .samples
-                .iter()
-                .scan(video.decode_time as i128, |time, s| {
-                    let pts = *time + s.composition_time_offset as i128;
-                    *time += s.duration as i128;
-                    Some(pts)
-                })
-                .min()
-                .ok_or(Error::Invalid("empty repair fragment"))?;
-            output.extend(build_moof(runs, parsed.sequence_number)?);
-            let payload = runs.iter().map(TrackRun::payload).sum::<u64>();
-            output.extend(
-                u32::try_from(payload + 8)
-                    .map_err(|_| Error::Limit("repair mdat too large"))?
-                    .to_be_bytes(),
-            );
-            output.extend(b"mdat");
-            for sample in runs.iter().flat_map(|run| run.samples) {
-                let offset = sample
-                    .location
-                    .offset
-                    .checked_sub(part.offset)
-                    .ok_or(Error::Invalid("repair sample before part"))?
-                    as usize;
-                output.extend(
-                    bytes
-                        .get(offset..offset + sample.location.size as usize)
-                        .ok_or(Error::Invalid("repair sample outside part"))?,
-                );
-            }
-            if output.len() > MAX_REPAIR + REPAIR_HEADER_SLACK {
-                return Err(Error::Limit("repair output exceeds cap"));
-            }
-            rewritten.push(PlaybackPart {
-                source: String::new(),
-                offset: start as u64,
-                length: (output.len() - start) as u64,
-                presentation_start_ns: i64::try_from(presentation * 1_000_000_000 / scale)
-                    .map_err(|_| Error::Invalid("repair timestamp overflow"))?,
-                starts_with_sync: video.samples[0].location.is_sync,
-            });
-        }
-        drop(bytes);
-        let key = sink.put(output).await?;
-        for mut item in rewritten {
-            item.source = key.clone();
-            result.push(item);
-        }
+        rewritten.push(PlaybackPart {
+            source: String::new(),
+            offset: start as u64,
+            length: (output.len() - start) as u64,
+            presentation_start_ns: i64::try_from(presentation * 1_000_000_000 / scale)
+                .map_err(|_| Error::Invalid("repair timestamp overflow"))?,
+            starts_with_sync: video.samples[0].location.is_sync,
+        });
     }
-    Ok(result)
+    Ok((output, rewritten))
+}
+
+/// The sequence number `count` fragments after `sequence`.
+fn next_sequence(sequence: u32, count: usize) -> Result<u32> {
+    u32::try_from(count)
+        .ok()
+        .and_then(|count| sequence.checked_add(count))
+        .ok_or(Error::Limit("fragment sequence number overflow"))
+}
+
+/// How much of the source a copy reads at once.
+const COPY_CHUNK: u64 = 4 * 1024 * 1024;
+
+/// Copy the source's bytes from `start` to `end` into `output`; with a
+/// `sequence`, the range is a `moof` and its `mfhd` sequence number becomes it.
+async fn copy_range<S: ByteSource + ?Sized, W: Write>(
+    source: &S,
+    start: u64,
+    end: u64,
+    output: &mut W,
+    sequence: Option<u32>,
+) -> Result<()> {
+    let mut offset = start;
+    while offset < end {
+        let length = (end - offset).min(COPY_CHUNK) as usize;
+        let mut bytes = source.range(offset, length).await?;
+        if let Some(sequence) = sequence.filter(|_| offset == start) {
+            // moof size and type, then mfhd's size, type, version and flags, then its sequence number.
+            if bytes.get(4..8) != Some(b"moof") || bytes.get(12..16) != Some(b"mfhd") {
+                return Err(Error::Invalid(
+                    "part does not start with a moof and its mfhd",
+                ));
+            }
+            bytes
+                .get_mut(20..24)
+                .ok_or(Error::Invalid("short mfhd"))?
+                .copy_from_slice(&sequence.to_be_bytes());
+        }
+        write_all(output, &bytes)?;
+        offset += length as u64;
+    }
+    Ok(())
+}
+
+fn write_all<W: Write>(output: &mut W, bytes: &[u8]) -> Result<()> {
+    output
+        .write_all(bytes)
+        .map_err(|error| Error::Source(format!("write repaired recording: {error}")))
 }
 
 /// One track's share of a rewritten fragment: a run of its source samples, the
