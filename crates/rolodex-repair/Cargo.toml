@@ -1,0 +1,16 @@
+[package]
+name = "rolodex-repair"
+description = "Bounded lossless repair of oversized seekable ranges in indexed fMP4 recordings"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+default = []
+codec-h264 = ["rolodex-core/codec-h264"]
+codec-h265 = ["rolodex-core/codec-h265"]
+
+[dependencies]
+async-trait.workspace = true
+rolodex-core = { path = "../rolodex-core", default-features = false }

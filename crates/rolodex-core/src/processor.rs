@@ -18,7 +18,7 @@ use crate::{
     sprite::{SpriteBuilder, SpriteLayout},
 };
 
-pub const PROCESSOR_VERSION: &str = "7";
+pub const PROCESSOR_VERSION: &str = "8";
 pub const METADATA_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +166,7 @@ pub struct PlaybackPart {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RepairSkipReason {
+    /// A track besides the video track is not audio.
     UnsupportedTracks,
     UnsupportedGop,
     NotNeeded,
@@ -398,16 +399,44 @@ pub struct ProcessorOutput {
 /// Metadata and decoder state produced without reading video sample payloads.
 ///
 /// The public fields are the durable index artifacts. Private fields retain the
-/// parsed information needed for later thumbnail and repair passes over the same source.
+/// parsed information needed for later passes over the same source: thumbnails
+/// here, and repairs in `rolodex-repair`, which reads them through the accessors.
 pub struct RecordingIndex {
     pub metadata: RecordingMetadata,
     pub init_mp4: Vec<u8>,
     pub metrics: ProcessorMetrics,
-    pub(crate) movie: ArchiveMovie,
-    pub(crate) video_samples: Vec<TimedVideoSample>,
+    movie: ArchiveMovie,
+    video_samples: Vec<TimedVideoSample>,
     video_timing: VideoTiming,
-    pub(crate) options: ProcessorOptions,
+    options: ProcessorOptions,
     cache: FileCache,
+}
+
+impl RecordingIndex {
+    /// The parsed movie header: its tracks and their fragment defaults.
+    pub fn movie(&self) -> &ArchiveMovie {
+        &self.movie
+    }
+
+    /// Every video sample of the recording, in decode order.
+    pub fn video_samples(&self) -> &[TimedVideoSample] {
+        &self.video_samples
+    }
+
+    /// The validated options the recording was indexed with.
+    pub fn options(&self) -> ProcessorOptions {
+        self.options
+    }
+
+    /// The finished output: the index's artifacts, with the sprite rendered for it.
+    pub fn into_output(self, thumbnail_jpeg: Option<Vec<u8>>) -> ProcessorOutput {
+        ProcessorOutput {
+            thumbnail_jpeg,
+            metadata: self.metadata,
+            init_mp4: self.init_mp4,
+            metrics: self.metrics,
+        }
+    }
 }
 
 struct PendingFragment {
@@ -415,10 +444,11 @@ struct PendingFragment {
     fragment: IndexedFragment,
 }
 
+/// A video sample on the recording's decode timeline, and where its payload is.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct TimedVideoSample {
-    pub(crate) location: SampleLocation,
-    pub(crate) decode_start_ns: i64,
+pub struct TimedVideoSample {
+    pub location: SampleLocation,
+    pub decode_start_ns: i64,
     decode_end_ns: i64,
     presentation_start_ns: i64,
 }
@@ -446,31 +476,31 @@ where
     S: ByteSource + ?Sized,
     D: VideoDecoder,
 {
-    process_recording_inner::<S, D>(source, identity, options, None).await
-}
-
-pub async fn process_recording_with_repairs<S: ByteSource + ?Sized>(
-    source: &S,
-    identity: SourceIdentity,
-    options: ProcessorOptions,
-    sink: &dyn crate::remux::RepairSink,
-) -> Result<ProcessorOutput> {
-    process_recording_inner::<S, SelectedDecoder>(source, identity, options, Some(sink)).await
-}
-
-async fn process_recording_inner<S: ByteSource + ?Sized, D: VideoDecoder>(
-    source: &S,
-    identity: SourceIdentity,
-    options: ProcessorOptions,
-    sink: Option<&dyn crate::remux::RepairSink>,
-) -> Result<ProcessorOutput> {
-    let thumbnail_options = options.thumbnail;
     let mut index = index_recording_inner(source, identity, options).await?;
+    let thumbnail_jpeg = render_recording_thumbnail_with_decoder::<S, D>(source, &mut index).await;
+    Ok(index.into_output(thumbnail_jpeg))
+}
+
+/// Render the sprite the index's options ask for, recording its metadata and
+/// read metrics in the index. Best-effort: a failure leaves the index with an
+/// unavailable thumbnail carrying the error, and no sprite.
+pub async fn render_recording_thumbnail<S: ByteSource + ?Sized>(
+    source: &S,
+    index: &mut RecordingIndex,
+) -> Option<Vec<u8>> {
+    render_recording_thumbnail_with_decoder::<S, SelectedDecoder>(source, index).await
+}
+
+async fn render_recording_thumbnail_with_decoder<S: ByteSource + ?Sized, D: VideoDecoder>(
+    source: &S,
+    index: &mut RecordingIndex,
+) -> Option<Vec<u8>> {
+    let thumbnail_options = index.options.thumbnail;
     let mut metrics = index.metrics.clone();
     let (thumbnail_jpeg, thumbnail_metadata) = if let Some(thumbnail_options) = thumbnail_options {
         match render_thumbnail_sprite_with_decoder::<S, D>(
             source,
-            &index,
+            index,
             thumbnail_options,
             None,
             &mut metrics,
@@ -493,19 +523,9 @@ async fn process_recording_inner<S: ByteSource + ?Sized, D: VideoDecoder>(
         (None, ThumbnailMetadata::unavailable(None, None))
     };
     metrics.thumbnail_bytes = thumbnail_jpeg.as_ref().map_or(0, |jpeg| jpeg.len() as u64);
-    // Repairs share the budget already consumed by indexing and thumbnail reads.
     index.metrics = metrics;
-    if let Some(sink) = sink {
-        index.metadata.playback_parts =
-            crate::remux::repair_recording(source, &mut index, sink).await?;
-    }
     index.metadata.thumbnail = thumbnail_metadata;
-    Ok(ProcessorOutput {
-        thumbnail_jpeg,
-        metadata: index.metadata,
-        init_mp4: index.init_mp4,
-        metrics: index.metrics,
-    })
+    thumbnail_jpeg
 }
 
 pub async fn index_recording<S: ByteSource + ?Sized>(
@@ -1465,7 +1485,7 @@ mod tests {
 
         assert!(output.thumbnail_jpeg.is_none());
         assert_eq!(output.metadata.schema_version, 4);
-        assert_eq!(output.metadata.processor_version, "7");
+        assert_eq!(output.metadata.processor_version, "8");
         assert!(output.metadata.recording.video_duration_ns > 0);
         assert_eq!(output.metadata.thumbnail.frame_count, 0);
         assert_eq!(output.metadata.thumbnail.frames, Vec::new());

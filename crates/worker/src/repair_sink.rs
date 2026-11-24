@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use rolodex_core::{Error, Result, remux::RepairSink};
+use rolodex_core::{Error, Result};
+use rolodex_repair::RepairSink;
 use sha2::{Digest, Sha256};
 use worker::{Bucket, HttpMetadata};
 

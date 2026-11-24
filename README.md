@@ -109,9 +109,9 @@ first, and `index.m3u8` is written last as the commit marker.
 ## Test and verify
 
 ```bash
-cargo test -p rolodex-core -p rolodex-clip -p rolodex -p rolodex-worker \
+cargo test -p rolodex-core -p rolodex-clip -p rolodex-repair -p rolodex -p rolodex-worker \
   --no-default-features --features codec-h264
-cargo test -p rolodex-core -p rolodex-clip -p rolodex -p rolodex-worker \
+cargo test -p rolodex-core -p rolodex-clip -p rolodex-repair -p rolodex -p rolodex-worker \
   --no-default-features --features codec-h265
 
 ./scripts/verify-fixtures.sh
@@ -213,13 +213,23 @@ load evidence, and production rollout approval.
 
 ## Bounded playback repairs
 
-`process_recording_with_repairs` accepts a `RepairSink` and optionally repairs
-oversized independently seekable ranges in single-track H.264 recordings. It
-splits selected fragments at existing keyframes, targeting 6 seconds or 4 MB per
-range without decoding or changing encoded video samples. Each source fragment
-is bounded to 4 MiB, and repair reads share the processing read budget. Layouts
-that cannot be repaired within those bounds retain their original playback path.
-The normal `process_recording` API remains available without repairs.
+Repairs live in their own crate, `rolodex-repair`, over a recording
+`rolodex-core` has indexed. Its `process_recording_with_repairs` accepts a
+`RepairSink` and optionally repairs oversized independently seekable ranges in
+H.264 and H.265 recordings, with or without audio tracks. It splits selected
+fragments at existing video keyframes, targeting 6 seconds or 4 MB per range
+without decoding or changing encoded samples. Each audio track is cut at the
+same instants, so every rewritten fragment carries the audio that decodes from
+its keyframe until the next cut. A recording with a track that is neither its
+video nor audio is left unrepaired. Each source fragment is bounded to 4 MiB,
+and repair reads share the processing read budget. Layouts that cannot be repaired within
+those bounds retain their original playback path. The normal
+`process_recording` API in `rolodex-core` remains available without repairs.
+
+The crate reads through a `ByteSource` and writes through a `RepairSink`, so it
+is not tied to the Worker: the Worker supplies R2 for both, and anything else
+that can supply the two, such as a process with the recording on local disk,
+can run the same repair with `repair_recording`.
 
 Original parts remain in recording metadata for thumbnail and clip consumers;
 optional `playback_parts` describe committed immutable repair objects. Processor
@@ -227,6 +237,10 @@ version 7 publishes daily page version 3 with segment `pieces` identifying byte
 ranges in original and repair objects. The updated client assembles these ranges
 with bounded concurrency before appending an independently decodable HLS segment.
 Version 1 pages remain readable. Deploy the updated client with the worker.
+
+Processor version 8 extends repairs to recordings with audio tracks and to
+H.265, with the same page format. A recording indexed by an earlier version is
+processed again when its notification is redelivered.
 
 With retention enabled, publication prunes expired manifest entries using page
 coverage and only reads pages crossing the cutoff. Object deletion belongs to

@@ -313,7 +313,7 @@ async fn process(
         source_etag.clone(),
     );
     let sink = crate::repair_sink::R2RepairSink::new(bucket.clone(), keys.repair_prefix());
-    let output = rolodex_core::processor::process_recording_with_repairs(
+    let output = rolodex_repair::process_recording_with_repairs(
         &source,
         SourceIdentity {
             object_key: event.object.key.clone(),

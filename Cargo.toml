@@ -2,10 +2,16 @@
 members = [
     "crates/rolodex-core",
     "crates/rolodex-clip",
+    "crates/rolodex-repair",
     "crates/cli",
     "crates/worker",
 ]
-default-members = ["crates/rolodex-core", "crates/rolodex-clip", "crates/cli"]
+default-members = [
+    "crates/rolodex-core",
+    "crates/rolodex-clip",
+    "crates/rolodex-repair",
+    "crates/cli",
+]
 resolver = "2"
 
 [workspace.package]
